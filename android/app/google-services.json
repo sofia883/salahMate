@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "640081377430",
+    "project_id": "prayertracker-d8435",
+    "storage_bucket": "prayertracker-d8435.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:640081377430:android:ef6f7868cd3faf37aeaab7",
+        "android_client_info": {
+          "package_name": "com.example.salahmate"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXsdJ7Ohe6Jbo7z5YfvG66xsnqdz5t4H4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
