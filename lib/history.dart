@@ -37,14 +37,15 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void _handleDelete(QazaNamaz namaz) async {
     await widget.prayerService.deleteFromHistory(namaz.id!);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Prayer moved to history!'),
-          backgroundColor: Colors.green,
-        ),
-      );
-    }
+   if (mounted) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Prayer moved to history!'),
+      backgroundColor: Colors.green,
+    ),
+  );
+}
+
   }
 
   void _clearAllHistory() async {
