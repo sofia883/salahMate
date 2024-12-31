@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'models.dart';
 import 'package:flutter/material.dart';
+import 'bulk_prayers.dart';
 
 class PrayerService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -203,44 +204,12 @@ class PrayerService {
     }
   }
 
-  // Future<void> deleteFromHistory(String prayerId) async {
-  //   final prayerDoc = await _historyCollection.doc(prayerId).get();
-  //   if (prayerDoc.exists) {
-  //     // Move the prayer to the deletedHistory collection
-  //     await _deletedHistoryCollection.add(prayerDoc.data()!);
-  //     // Remove it from the active history collection
-  //     await _historyCollection.doc(prayerId).delete();
-  //   }
-  // }
-
-//   // Clear all history
-//   Future<void> clearAllHistory() async {
-//     var snapshot = await _historyCollection.get();
-//     for (var doc in snapshot.docs) {
-//       await doc.reference.delete();
-//     }
-//   }
-// Future<void> deleteFromHistory(String prayerId) async {
-//   try {
-//     await _historyCollection.doc(prayerId).delete();
-//   } catch (e) {
-//     throw Exception('Failed to delete prayer: $e');
-//   }
-// }
-
   Future<void> clearDeletedHistory() async {
     final deletedDocs = await _deletedHistoryCollection.get();
     for (var doc in deletedDocs.docs) {
       await doc.reference.delete();
     }
   }
-
-  // Future<void> restorePrayer(QazaNamaz prayer) async {
-  //   // Add back to active history
-  //   await _historyCollection.add(prayer.toMap());
-  //   // (Optional) Remove from deletedHistory if desired
-  //   // await _deletedHistoryCollection.doc(prayer.id).delete();
-  // }
 
   CollectionReference get _deletedHistoryCollection {
     if (currentUserId == null) throw Exception('No user logged in');
@@ -249,15 +218,164 @@ class PrayerService {
         .doc(currentUserId)
         .collection('deletedHistory');
   }
-
-  // Stream<List<QazaNamaz>> getDeletedHistory() {
-  //   return _deletedHistoryCollection.snapshots().map((snapshot) {
-  //     return snapshot.docs.map((doc) {
-  //       return QazaNamaz.fromMap(doc.data() as Map<String, dynamic>, doc.id);
-  //     }).toList();
-  //   });
-  // }
 }
+
+// Data Models
+class DailyPrayers {
+  final DateTime date;
+  bool fajr;
+  bool zuhr;
+  bool asr;
+  bool maghrib;
+  bool isha;
+  final String? periodId;
+
+  DailyPrayers({
+    required this.date,
+    this.fajr = false,
+    this.zuhr = false,
+    this.asr = false,
+    this.maghrib = false,
+    this.isha = false,
+    this.periodId,
+  });
+
+  bool isCompleted() {
+    return fajr && zuhr && asr && maghrib && isha;
+  }
+
+  void togglePrayer(String prayer) {
+    switch (prayer) {
+      case 'Fajr':
+        fajr = !fajr;
+        break;
+      case 'Zuhr':
+        zuhr = !zuhr;
+        break;
+      case 'Asr':
+        asr = !asr;
+        break;
+      case 'Maghrib':
+        maghrib = !maghrib;
+        break;
+      case 'Isha':
+        isha = !isha;
+        break;
+    }
+  }
+
+  factory DailyPrayers.fromMap(Map<String, dynamic> map) {
+    return DailyPrayers(
+      date: (map['date'] as Timestamp).toDate(),
+      fajr: map['fajr'] ?? false,
+      zuhr: map['zuhr'] ?? false,
+      asr: map['asr'] ?? false,
+      maghrib: map['maghrib'] ?? false,
+      isha: map['isha'] ?? false,
+      periodId: map['periodId'],
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'date': Timestamp.fromDate(date),
+      'fajr': fajr,
+      'zuhr': zuhr,
+      'asr': asr,
+      'maghrib': maghrib,
+      'isha': isha,
+      'periodId': periodId,
+      'isCompleted': isCompleted(),
+    };
+  }
+}
+
+class BulkPeriod {
+  final String id;
+  final DateTime startDate;
+  final DateTime endDate;
+  final int totalDays;
+  final int completedDays;
+  final bool isActive;
+  final DateTime createdAt;
+
+  BulkPeriod({
+    required this.id,
+    required this.startDate,
+    required this.endDate,
+    required this.totalDays,
+    required this.completedDays,
+    required this.isActive,
+    required this.createdAt,
+  });
+
+  factory BulkPeriod.fromMap(Map<String, dynamic> map, String id) {
+    return BulkPeriod(
+      id: id,
+      startDate: (map['startDate'] as Timestamp).toDate(),
+      endDate: (map['endDate'] as Timestamp).toDate(),
+      totalDays: map['totalDays'] ?? 0,
+      completedDays: map['completedDays'] ?? 0,
+      isActive: map['isActive'] ?? true,
+      createdAt: (map['createdAt'] as Timestamp).toDate(),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'startDate': Timestamp.fromDate(startDate),
+      'endDate': Timestamp.fromDate(endDate),
+      'totalDays': totalDays,
+      'completedDays': completedDays,
+      'isActive': isActive,
+      'createdAt': Timestamp.fromDate(createdAt),
+    };
+  }
+}
+
+// class CompletedPeriod {
+//   final String id;
+//   final String originalPeriodId;
+//   final DateTime startDate;
+//   final DateTime endDate;
+//   final int totalDays;
+//   final int completedDays;
+//   final DateTime completedAt;
+
+//   CompletedPeriod({
+//     required this.id,
+//     required this.originalPeriodId,
+//     required this.startDate,
+//     required this.endDate,
+//     required this.totalDays,
+//     required this.completedDays,
+//     required this.completedAt,
+//   });
+
+//   factory CompletedPeriod.fromMap(Map<String, dynamic> map, String id) {
+//     return CompletedPeriod(
+//       id: id,
+//       originalPeriodId: map['originalPeriodId'] ?? '',
+//       startDate: (map['startDate'] as Timestamp).toDate(),
+//       endDate: (map['endDate'] as Timestamp).toDate(),
+//       totalDays: map['totalDays'] ?? 0,
+//       completedDays: map['completedDays'] ?? 0,
+//       completedAt: (map['completedAt'] as Timestamp).toDate(),
+//     );
+//   }
+
+//   Map<String, dynamic> toMap() {
+//     return {
+//       'originalPeriodId': originalPeriodId,
+//       'startDate': Timestamp.fromDate(startDate),
+//       'endDate': Timestamp.fromDate(endDate),
+//       'totalDays': totalDays,
+//       'completedDays': completedDays,
+//       'completedAt': Timestamp.fromDate(completedAt),
+//     };
+//   }
+
+// }
 
 class DeletedHistoryBottomSheet extends StatelessWidget {
   final PrayerService prayerService;
@@ -324,3 +442,857 @@ class DeletedHistoryBottomSheet extends StatelessWidget {
     );
   }
 }
+
+class BulkPrayerService {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  String? get currentUserId => _auth.currentUser?.uid;
+  // In prayer_service.dart
+  // Create a new bulk prayer period
+  Future<String> createBulkPeriod({
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    if (currentUserId == null) throw Exception('User not logged in');
+
+    // Create the bulk period document
+    final periodRef = await _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers')
+        .add({
+      'startDate': startDate,
+      'endDate': endDate,
+      'createdAt': FieldValue.serverTimestamp(),
+      'status': 'active',
+      'totalDays': endDate.difference(startDate).inDays + 1,
+      'completedDays': 0,
+    });
+
+    // Create prayer documents for each day
+    final int days = endDate.difference(startDate).inDays + 1;
+    final batch = _firestore.batch();
+
+    for (int i = 0; i < days; i++) {
+      final date = startDate.add(Duration(days: i));
+      final prayerDoc = _firestore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('bulkPrayers')
+          .doc(periodRef.id)
+          .collection('prayers')
+          .doc();
+
+      batch.set(prayerDoc, {
+        'date': date,
+        'fajr': false,
+        'zuhr': false,
+        'asr': false,
+        'maghrib': false,
+        'isha': false,
+        'isCompleted': false,
+      });
+    }
+
+    await batch.commit();
+    return periodRef.id;
+  }
+
+  // Get active period prayers
+  Stream<List<DailyPrayer>> getActivePeriodPrayers(String periodId) {
+    if (currentUserId == null) throw Exception('User not logged in');
+
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers')
+        .doc(periodId)
+        .collection('prayers')
+        .orderBy('date')
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => DailyPrayer.fromMap(doc.data(), doc.id))
+            .toList());
+  }
+
+  // Update prayer status
+  Future<void> updatePrayerStatus(
+    String prayerId,
+    String prayerName,
+    bool value,
+  ) async {
+    if (currentUserId == null) throw Exception('User not logged in');
+
+    await _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers')
+        .doc(prayerId)
+        .update({prayerName.toLowerCase(): value});
+  }
+
+  // Get active periods
+  Stream<List<BulkPeriod>> getActivePeriods() {
+    if (currentUserId == null) throw Exception('User not logged in');
+
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers')
+        .where('status', isEqualTo: 'active')
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => BulkPeriod.fromMap(doc.data(), doc.id))
+            .toList());
+  }
+  // Stream<List<DailyPrayer>> getActivePeriodPrayers(String periodId) {
+  //   return _firestore
+  //       .collection('users')
+  //       .doc(currentUserId)
+  //       .collection('dailyPrayers')
+  //       .where('periodId', isEqualTo: periodId)
+  //       .orderBy('date')
+  //       .snapshots()
+  //       .map((snapshot) => snapshot.docs
+  //           .map((doc) => DailyPrayer.fromMap(doc.data(), doc.id))
+  //           .toList());
+  // }
+
+  // // Update prayer status and handle completion
+  // Future<void> updatePrayerStatus(
+  //     String prayerId, String prayerName, bool value) async {
+  //   try {
+  //     final batch = _firestore.batch();
+  //     final prayerRef = _firestore
+  //         .collection('users')
+  //         .doc(currentUserId)
+  //         .collection('dailyPrayers')
+  //         .doc(prayerId);
+
+  //     // Get current prayer data
+  //     final prayerDoc = await prayerRef.get();
+  //     if (!prayerDoc.exists) throw Exception('Prayer not found');
+
+  //     final prayerData = prayerDoc.data() as Map<String, dynamic>;
+
+  //     // Update the specific prayer
+  //     Map<String, dynamic> updates = {prayerName.toLowerCase(): value};
+
+  //     // Check if all prayers are completed after this update
+  //     bool isCompleted = ['fajr', 'zuhr', 'asr', 'maghrib', 'isha'].every(
+  //       (prayer) => prayer == prayerName.toLowerCase()
+  //           ? value
+  //           : prayerData[prayer] == true,
+  //     );
+
+  //     if (isCompleted) {
+  //       updates['isCompleted'] = true;
+  //       updates['completedAt'] = FieldValue.serverTimestamp();
+
+  //       // Also update the period's progress
+  //       final periodRef = _firestore
+  //           .collection('users')
+  //           .doc(currentUserId)
+  //           .collection('bulkPeriods')
+  //           .doc(prayerData['periodId']);
+
+  //       final periodDoc = await periodRef.get();
+  //       final periodData = periodDoc.data() as Map<String, dynamic>;
+
+  //       batch.update(periodRef, {
+  //         'completedDays': FieldValue.increment(1),
+  //         'updatedAt': FieldValue.serverTimestamp(),
+  //       });
+
+  //       // If period is completed, move it to completed periods
+  //       if ((periodData['completedDays'] ?? 0) + 1 >= periodData['totalDays']) {
+  //         await _movePeriodToCompleted(prayerData['periodId']);
+  //       }
+  //     }
+
+  //     batch.update(prayerRef, updates);
+  //     await batch.commit();
+  //   } catch (e) {
+  //     throw Exception('Failed to update prayer status: $e');
+  //   }
+  // }
+
+  Future<void> _movePeriodToCompleted(String periodId) async {
+    final batch = _firestore.batch();
+
+    // Get period data
+    final periodDoc = await _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPeriods')
+        .doc(periodId)
+        .get();
+
+    final periodData = periodDoc.data()!;
+
+    // Create completed period entry
+    final completedRef = _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('completedBulkPeriods')
+        .doc();
+
+    batch.set(completedRef, {
+      ...periodData,
+      'originalPeriodId': periodId,
+      'completedAt': FieldValue.serverTimestamp(),
+    });
+
+    // Mark original period as inactive
+    batch.update(periodDoc.reference, {
+      'isActive': false,
+      'completedAt': FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+  }
+
+  // Get completed periods with aggregated data
+  Stream<List<Map<String, dynamic>>> getCompletedPeriodsWithStats() {
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('completedBulkPeriods')
+        .orderBy('completedAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.map((doc) {
+              final data = doc.data();
+              return {
+                ...data,
+                'id': doc.id,
+                'totalPrayers': (data['totalDays'] as int) * 5,
+                'completedPrayers': (data['completedDays'] as int) * 5,
+              };
+            }).toList());
+  }
+
+  // Load completed prayers for a specific period
+  Stream<List<CompletedPeriod>> getCompletedPrayers() {
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('completedBulkPeriods')
+        .orderBy('completedAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => CompletedPeriod.fromMap(doc.data(), doc.id))
+            .toList());
+  }
+
+  // Handle period completion
+  Future<void> _completePeriod(String periodId) async {
+    final periodRef = _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPeriods')
+        .doc(periodId);
+
+    final periodDoc = await periodRef.get();
+    final periodData = periodDoc.data() as Map<String, dynamic>;
+
+    // Create completed period entry
+    await _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('completedBulkPeriods')
+        .add({
+      'originalPeriodId': periodId,
+      'startDate': periodData['startDate'],
+      'endDate': periodData['endDate'],
+      'totalDays': periodData['totalDays'],
+      'completedDays': periodData['completedDays'],
+      'totalPrayers': periodData['totalDays'] * 5,
+      'completedAt': FieldValue.serverTimestamp(),
+    });
+
+    // Update original period status
+    await periodRef.update({
+      'isActive': false,
+      'completedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<List<DailyPrayers>> getPeriodPrayers(String periodId) async {
+    final prayersQuery = await _firestore
+        .collection('periods')
+        .doc(periodId)
+        .collection('prayers')
+        .orderBy('date')
+        .get();
+
+    return prayersQuery.docs.map((doc) {
+      return DailyPrayers.fromMap({...doc.data(), 'id': doc.id});
+    }).toList();
+  }
+
+  Future<void> addCompletedPrayers(List<CompletedPeriod> periods) async {
+    final batch = _firestore.batch();
+
+    for (var period in periods) {
+      final docRef = _firestore.collection('completedPrayers').doc();
+      batch.set(docRef, period.toMap());
+    }
+
+    await batch.commit();
+  }
+
+  Future<void> createPrayerPeriod(DateTime startDate, DateTime endDate) async {
+    final periodRef = _firestore
+        .collection('bulkPrayers')
+        .doc(currentUserId)
+        .collection('periodTime')
+        .doc();
+
+    await periodRef.set({
+      'startDate': startDate,
+      'endDate': endDate,
+      'totalPrayers': endDate.difference(startDate).inDays * 5,
+      'completedPrayers': 0,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    final batch = _firestore.batch();
+    DateTime current = startDate;
+
+    while (current.isBefore(endDate.add(Duration(days: 1)))) {
+      final prayerRef = _firestore
+          .collection('bulkPrayers')
+          .doc(currentUserId)
+          .collection('prayers')
+          .doc();
+
+      batch.set(prayerRef, {
+        'date': current,
+        'periodId': periodRef.id,
+        'fajr': {'completed': false, 'completedAt': null},
+        'zuhr': {'completed': false, 'completedAt': null},
+        'asr': {'completed': false, 'completedAt': null},
+        'maghrib': {'completed': false, 'completedAt': null},
+        'isha': {'completed': false, 'completedAt': null},
+        'allCompleted': false
+      });
+
+      current = current.add(Duration(days: 1));
+    }
+
+    await batch.commit();
+  }
+
+  Future<void> completePrayer(
+      String periodId, DateTime date, String prayerName) async {
+    // Transaction to ensure atomic updates
+    await _firestore.runTransaction((transaction) async {
+      // Get prayer document
+      final prayerQuery = await _firestore
+          .collection('bulkPrayers')
+          .doc(currentUserId)
+          .collection('prayers')
+          .where('date', isEqualTo: date)
+          .where('periodId', isEqualTo: periodId)
+          .get();
+
+      if (prayerQuery.docs.isEmpty) return;
+
+      final prayerDoc = prayerQuery.docs.first;
+      final prayerData = prayerDoc.data();
+
+      // Update prayer status
+      transaction.update(prayerDoc.reference, {
+        '$prayerName.completed': true,
+        '$prayerName.completedAt': FieldValue.serverTimestamp(),
+      });
+
+      // Check if all prayers for the day are completed
+      bool allCompleted = true;
+      ['fajr', 'zuhr', 'asr', 'maghrib', 'isha'].forEach((prayer) {
+        if (prayer == prayerName) return;
+        allCompleted = allCompleted && prayerData[prayer]['completed'] == true;
+      });
+
+      if (allCompleted) {
+        // Update prayer document
+        transaction.update(prayerDoc.reference, {'allCompleted': true});
+
+        // Add to completed prayers
+        final completedRef = _firestore
+            .collection('bulkPrayers')
+            .doc(currentUserId)
+            .collection('completedPrayers')
+            .doc();
+
+        transaction.set(completedRef, {
+          'periodId': periodId,
+          'date': date,
+          'completedAt': FieldValue.serverTimestamp(),
+        });
+
+        // Update period progress
+        final periodRef = _firestore
+            .collection('bulkPrayers')
+            .doc(currentUserId)
+            .collection('periodTime')
+            .doc(periodId);
+
+        final periodDoc = await transaction.get(periodRef);
+        final currentCompleted = periodDoc.data()?['completedPrayers'] ?? 0;
+
+        transaction
+            .update(periodRef, {'completedPrayers': currentCompleted + 5});
+      }
+    });
+  }
+
+  // Stream<List<Map<String, dynamic>>> getPeriodPrayers(String periodId) {
+  //   return _firestore
+  //       .collection('bulkPrayers')
+  //       .doc(currentUserId)
+  //       .collection('prayers')
+  //       .where('periodId', isEqualTo: periodId)
+  //       .orderBy('date')
+  //       .snapshots()
+  //       .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
+  // }
+
+  // Stream<List<Map<String, dynamic>>> getCompletedPrayers(String periodId) {
+  //   return _firestore
+  //       .collection('bulkPrayers')
+  //       .doc(currentUserId)
+  //       .collection('completedPrayers')
+  //       .where('periodId', isEqualTo: periodId)
+  //       .orderBy('completedAt', descending: true)
+  //       .snapshots()
+  //       .map((snapshot) => snapshot.docs.map((doc) => doc.data()).toList());
+  // }
+
+  CollectionReference get _bulkPrayersCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers');
+  }
+
+  CollectionReference get _completedBulkPrayersCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('completedBulkPrayers');
+  }
+
+  Future<void> addPeriodPrayers(List<DailyPrayers> prayers) async {
+    if (currentUserId == null) throw Exception('No user logged in');
+    if (prayers.isEmpty) return;
+
+    try {
+      // Create a new bulk period document
+      final periodDoc = await _bulkPrayersCollection.add({
+        'startDate': Timestamp.fromDate(prayers.first.date),
+        'endDate': Timestamp.fromDate(prayers.last.date),
+        'totalDays': prayers.length,
+        'completedDays': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      // Add all prayers in a batch
+      final batch = _firestore.batch();
+
+      for (var prayer in prayers) {
+        final prayerDoc = _bulkPrayersCollection
+            .doc(periodDoc.id)
+            .collection('prayers')
+            .doc();
+
+        batch.set(prayerDoc, {
+          ...prayer.toMap(),
+          'periodId': periodDoc.id,
+        });
+      }
+
+      await batch.commit();
+      print(
+          'Successfully added ${prayers.length} prayers to period ${periodDoc.id}');
+    } catch (e) {
+      print('Error adding bulk prayers: $e');
+      throw Exception('Failed to add prayers: $e');
+    }
+  }
+
+  // Future<void> addCompletedPrayers(List<CompletedPeriod> completed) async {
+  //   if (currentUserId == null) throw Exception('No user logged in');
+  //   if (completed.isEmpty) return;
+
+  //   try {
+  //     final batch = _firestore.batch();
+
+  //     for (var period in completed) {
+  //       final docRef = _completedBulkPrayersCollection.doc();
+  //       batch.set(docRef, period.toMap());
+  //     }
+
+  //     await batch.commit();
+  //     print('Successfully added ${completed.length} completed periods');
+  //   } catch (e) {
+  //     print('Error adding completed prayers: $e');
+  //     throw Exception('Failed to add completed prayers: $e');
+  //   }
+  // }
+
+  // // Stream to get all bulk prayers for a period
+  // Stream<List<DailyPrayers>> getPeriodPrayers(String periodId) {
+  //   return _bulkPrayersCollection
+  //       .doc(periodId)
+  //       .collection('prayers')
+  //       .orderBy('date')
+  //       .snapshots()
+  //       .map((snapshot) => snapshot.docs
+  //           .map((doc) => DailyPrayers.fromMap(doc.data()))
+  //           .toList());
+  // }
+
+  // Stream to get all completed periods
+  CollectionReference get _bulkPeriodsCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers') // Separate collection for bulk prayers
+        .doc('periods')
+        .collection('daily'); // Store daily prayers here
+  }
+
+  CollectionReference get _dailyPrayersCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('dailyBulkPrayers');
+  }
+
+  final CollectionReference _historyCollection =
+      FirebaseFirestore.instance.collection('history');
+
+  CollectionReference get _completedPeriodsCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('completedBulkPeriods');
+  }
+
+  // Future<void> addPeriodPrayers(List<DailyPrayers> prayers) async {
+  //   if (currentUserId == null) throw Exception('No user logged in');
+
+  //   print('Starting to add ${prayers.length} bulk prayers');
+
+  //   try {
+  //     WriteBatch batch = _firestore.batch();
+
+  //     for (var prayer in prayers) {
+  //       DocumentReference prayerDocRef = _bulkPeriodsCollection.doc();
+  //       print('Adding prayer for date: ${prayer.date}');
+  //       batch.set(prayerDocRef, prayer.toMap());
+  //     }
+
+  //     await batch.commit();
+  //     print('Successfully added bulk prayers');
+  //   } catch (e) {
+  //     print('Error adding bulk prayers: $e');
+  //     throw Exception('Failed to add prayers: $e');
+  //   }
+  // }
+
+  // Future<void> addCompletedPrayers(List<CompletedPeriod> completed) async {
+  //   if (currentUserId == null) throw Exception('No user logged in');
+
+  //   WriteBatch batch = _firestore.batch();
+
+  //   for (var period in completed) {
+  //     DocumentReference periodDocRef = _historyCollection.doc();
+  //     batch.set(periodDocRef, {
+  //       'startDate': period.startDate,
+  //       'endDate': period.endDate,
+  //       'days': period,
+  //       'isDeleted': false, // To keep track of deleted prayers
+  //     });
+  //   }
+
+  //   try {
+  //     await batch.commit();
+  //   } catch (e) {
+  //     throw Exception('Failed to add completed prayers: $e');
+  //   }
+  // }
+
+  // // Create new bulk period
+  // Future<String> createBulkPeriod({
+  //   required DateTime startDate,
+  //   required DateTime endDate,
+  // }) async {
+  //   try {
+  //     // Calculate total days
+  //     final totalDays = endDate.difference(startDate).inDays + 1;
+
+  //     // Create the bulk period document
+  //     final docRef = await _bulkPeriodsCollection.add({
+  //       'startDate': Timestamp.fromDate(startDate),
+  //       'endDate': Timestamp.fromDate(endDate),
+  //       'totalDays': totalDays,
+  //       'completedDays': 0,
+  //       'isActive': true,
+  //       'createdAt': FieldValue.serverTimestamp(),
+  //     });
+
+  //     // Create daily prayer documents for each day in the period
+  //     DateTime currentDate = startDate;
+  //     final batch = _firestore.batch();
+
+  //     while (currentDate.isBefore(endDate) ||
+  //         currentDate.isAtSameMomentAs(endDate)) {
+  //       final dailyDocRef = _dailyPrayersCollection.doc();
+  //       batch.set(dailyDocRef, {
+  //         'periodId': docRef.id,
+  //         'date': Timestamp.fromDate(currentDate),
+  //         'fajr': false,
+  //         'zuhr': false,
+  //         'asr': false,
+  //         'maghrib': false,
+  //         'isha': false,
+  //         'isCompleted': false,
+  //         'createdAt': FieldValue.serverTimestamp(),
+  //       });
+  //       currentDate = currentDate.add(Duration(days: 1));
+  //     }
+
+  //     await batch.commit();
+  //     return docRef.id;
+  //   } catch (e) {
+  //     throw Exception('Failed to create bulk period: $e');
+  //   }
+  // }
+
+  // // Get active bulk periods
+  // Stream<List<BulkPeriod>> getActivePeriods() {
+  //   return _bulkPeriodsCollection
+  //       .where('isActive', isEqualTo: true)
+  //       .orderBy('createdAt', descending: true)
+  //       .snapshots()
+  //       .map((snapshot) => snapshot.docs
+  //           .map((doc) =>
+  //               BulkPeriod.fromMap(doc.data() as Map<String, dynamic>, doc.id))
+  //           .toList());
+  // }
+
+  // Get daily prayers for a specific period
+  Stream<List<DailyPrayer>> getDailyPrayers(String periodId) {
+    return _dailyPrayersCollection
+        .where('periodId', isEqualTo: periodId)
+        .orderBy('date')
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) =>
+                DailyPrayer.fromMap(doc.data() as Map<String, dynamic>, doc.id))
+            .toList());
+  }
+
+  // Update daily prayer status
+  Future<void> updateDailyPrayer(
+      String prayerId, String prayerName, bool value) async {
+    try {
+      final docRef = _dailyPrayersCollection.doc(prayerId);
+      final doc = await docRef.get();
+
+      if (!doc.exists) {
+        throw Exception('Prayer document not found');
+      }
+
+      final data = doc.data() as Map<String, dynamic>;
+      data[prayerName.toLowerCase()] = value;
+
+      // Check if all prayers are completed
+      final isCompleted = [
+        'fajr',
+        'zuhr',
+        'asr',
+        'maghrib',
+        'isha',
+      ].every((prayer) =>
+          prayer == prayerName.toLowerCase() ? value : data[prayer] == true);
+
+      // Update the prayer document
+      await docRef.update({
+        prayerName.toLowerCase(): value,
+        'isCompleted': isCompleted,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      // If all prayers are completed, update the period's completed days count
+      if (isCompleted) {
+        await _updatePeriodProgress(data['periodId']);
+      }
+    } catch (e) {
+      throw Exception('Failed to update prayer status: $e');
+    }
+  }
+
+  // Update period progress
+  Future<void> _updatePeriodProgress(String periodId) async {
+    try {
+      // Count completed days
+      final completedDays = await _dailyPrayersCollection
+          .where('periodId', isEqualTo: periodId)
+          .where('isCompleted', isEqualTo: true)
+          .get();
+
+      // Update period document
+      await _bulkPeriodsCollection.doc(periodId).update({
+        'completedDays': completedDays.size,
+      });
+
+      // Check if all days are completed
+      final periodDoc = await _bulkPeriodsCollection.doc(periodId).get();
+      final periodData = periodDoc.data() as Map<String, dynamic>;
+
+      if (completedDays.size >= periodData['totalDays']) {
+        await _completePeriod(periodId);
+      }
+    } catch (e) {
+      throw Exception('Failed to update period progress: $e');
+    }
+  }
+
+  // Get completed periods
+  Stream<List<CompletedPeriod>> getCompletedPeriods() {
+    return _completedPeriodsCollection
+        .orderBy('completedAt', descending: true)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => CompletedPeriod.fromMap(
+                doc.data() as Map<String, dynamic>, doc.id))
+            .toList());
+  }
+
+  // Delete a period
+  Future<void> deletePeriod(String periodId) async {
+    try {
+      // Delete all daily prayers for this period
+      final dailyPrayers = await _dailyPrayersCollection
+          .where('periodId', isEqualTo: periodId)
+          .get();
+
+      final batch = _firestore.batch();
+      for (var doc in dailyPrayers.docs) {
+        batch.delete(doc.reference);
+      }
+
+      // Delete the period document
+      batch.delete(_bulkPeriodsCollection.doc(periodId));
+
+      await batch.commit();
+    } catch (e) {
+      throw Exception('Failed to delete period: $e');
+    }
+  }
+}
+
+class DailyPrayer {
+  final DateTime date;
+  final String? id;
+
+  final String periodId;
+
+  bool fajr, zuhr, asr, maghrib, isha;
+  bool isCompleted;
+
+  DailyPrayer({
+    required this.id,
+    required this.date,
+    required this.periodId,
+    this.fajr = false,
+    this.zuhr = false,
+    this.asr = false,
+    this.maghrib = false,
+    this.isha = false,
+    this.isCompleted = false,
+  });
+
+  void togglePrayer(String prayer) {
+    switch (prayer) {
+      case 'Fajr':
+        fajr = !fajr;
+        break;
+      case 'Zuhr':
+        zuhr = !zuhr;
+        break;
+      case 'Asr':
+        asr = !asr;
+        break;
+      case 'Maghrib':
+        maghrib = !maghrib;
+        break;
+      case 'Isha':
+        isha = !isha;
+        break;
+    }
+  }
+
+  factory DailyPrayer.fromMap(Map<String, dynamic> map, String id) {
+    return DailyPrayer(
+      id: id,
+      periodId: map['periodId'] ?? '',
+      date: (map['date'] as Timestamp).toDate(),
+      fajr: map['fajr'] ?? false,
+      zuhr: map['zuhr'] ?? false,
+      asr: map['asr'] ?? false,
+      maghrib: map['maghrib'] ?? false,
+      isha: map['isha'] ?? false,
+      isCompleted: map['isCompleted'] ?? false,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'periodId': periodId,
+      'date': Timestamp.fromDate(date),
+      'fajr': fajr,
+      'zuhr': zuhr,
+      'asr': asr,
+      'maghrib': maghrib,
+      'isha': isha,
+      'isCompleted': isCompleted,
+    };
+  }
+}
+
+// // Data Models
+// class DailyPrayer {
+//   final String id;
+//   final String periodId;
+//   final DateTime date;
+//   bool fajr;
+//   bool zuhr;
+//   bool asr;
+//   bool maghrib;
+//   bool isha;
+//   bool isCompleted;
+
+//   DailyPrayer({
+//     required this.id,
+//     required this.periodId,
+//     required this.date,
+//     this.fajr = false,
+//     this.zuhr = false,
+//     this.asr = false,
+//     this.maghrib = false,
+//     this.isha = false,
+//     this.isCompleted = false,
+//   });
+
+// }

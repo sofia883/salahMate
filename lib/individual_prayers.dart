@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:salahmate/login_screen.dart';
 import 'models.dart';
 import 'package:intl/intl.dart';
 import 'history.dart';
-import 'bulk_prayers.dart';
 import 'services.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 class IndividualPrayersScreen extends StatefulWidget {
   @override
@@ -14,7 +11,6 @@ class IndividualPrayersScreen extends StatefulWidget {
 }
 
 class _IndividualPrayersScreenState extends State<IndividualPrayersScreen> {
-  final AuthService _authService = AuthService();
   final PrayerService _prayerService =
       PrayerService(); // Updated to use PrayerService
   List<QazaNamaz> qazaNamazList = [];

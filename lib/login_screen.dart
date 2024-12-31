@@ -1,13 +1,14 @@
 // firebase_service.dart
 import 'dart:developer';
-
+import 'bulk_prayers.dart';
+import 'services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'individual_prayers.dart';
 import 'bulk_prayers.dart';
 import 'models.dart';
-
+import 'services.dart';
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
