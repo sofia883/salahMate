@@ -26,7 +26,145 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
   int totalDays = 0;
   int displayDays = 7;
   String? currentPeriodId;
+// First, let's improve the _updatePrayerStatus function to handle progress updates better
+  Future<void> _updatePrayerStatus(
+      String prayerId, String prayer, bool value) async {
+    try {
+      // Update local cache first for immediate UI response
+      setState(() {
+        if (_prayerCache[prayerId] == null) {
+          _prayerCache[prayerId] = {};
+        }
+        _prayerCache[prayerId]![prayer] = value;
+      });
 
+      // Update the prayer document
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(FirebaseAuth.instance.currentUser?.uid)
+          .collection('prayers')
+          .doc(prayerId)
+          .update({prayer: value});
+
+      // After updating prayer, calculate total completed prayers for this period
+      await _updateProgressCounters();
+    } catch (e) {
+      print('Error updating prayer status: $e');
+      // Revert local cache if update fails
+      setState(() {
+        _prayerCache[prayerId]![prayer] = !value;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update prayer status')),
+      );
+    }
+  }
+
+// Improve the _updateProgressCounters function
+  Future<void> _updateProgressCounters() async {
+    if (currentPeriodId == null) return;
+
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+
+      // Get all prayers for this period
+      final prayers = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('prayers')
+          .where('periodId', isEqualTo: currentPeriodId)
+          .get();
+
+      int totalCompletedPrayers = 0;
+      int completedDaysCount = 0;
+
+      // Calculate completed prayers and days
+      for (var doc in prayers.docs) {
+        var data = doc.data();
+        int dayCompletedPrayers = 0;
+
+        if (data['fajr'] == true) dayCompletedPrayers++;
+        if (data['zuhr'] == true) dayCompletedPrayers++;
+        if (data['asr'] == true) dayCompletedPrayers++;
+        if (data['maghrib'] == true) dayCompletedPrayers++;
+        if (data['isha'] == true) dayCompletedPrayers++;
+
+        totalCompletedPrayers += dayCompletedPrayers;
+        if (dayCompletedPrayers == 5) completedDaysCount++;
+      }
+
+      // Update the period document with new counts
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('bulkPeriods')
+          .doc(currentPeriodId)
+          .update({
+        'completedPrayers': totalCompletedPrayers,
+        'completedDays': completedDaysCount,
+      });
+
+      // Update local state
+      setState(() {
+        completedPrayersCount = totalCompletedPrayers;
+        completedDays = completedDaysCount;
+      });
+    } catch (e) {
+      print('Error updating progress counters: $e');
+    }
+  }
+
+// Modify _subscribeToPrayerStatuses to listen to both prayers and period updates
+  void _subscribeToPrayerStatuses() {
+    if (currentPeriodId == null) return;
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+
+    // Listen to period document changes
+    FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('bulkPeriods')
+        .doc(currentPeriodId)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.exists) {
+        final data = snapshot.data()!;
+        setState(() {
+          completedDays = data['completedDays'] ?? 0;
+          completedPrayersCount = data['completedPrayers'] ?? 0;
+          totalPrayers = data['totalPrayers'] ?? 0;
+        });
+      }
+    });
+
+    // Listen to prayer status changes
+    FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('prayers')
+        .where('periodId', isEqualTo: currentPeriodId)
+        .snapshots()
+        .listen((snapshot) {
+      if (snapshot.docs.isNotEmpty) {
+        setState(() {
+          _prayerCache = Map.fromEntries(
+            snapshot.docs.map((doc) => MapEntry(
+                  doc.id,
+                  Map<String, bool>.from({
+                    'fajr': doc.data()['fajr'] ?? false,
+                    'zuhr': doc.data()['zuhr'] ?? false,
+                    'asr': doc.data()['asr'] ?? false,
+                    'maghrib': doc.data()['maghrib'] ?? false,
+                    'isha': doc.data()['isha'] ?? false,
+                  }),
+                )),
+          );
+        });
+      }
+    });
+  }
+
+// Add initState to ensure we load data when screen opens
   @override
   void initState() {
     super.initState();
@@ -40,6 +178,7 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
       isLoading = true;
     });
     await _loadActivePeriod();
+    _subscribeToPrayerStatuses(); // Subscribe after loading period
     setState(() {
       isLoading = false;
     });
@@ -133,63 +272,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
         isLoading = false;
       });
     }
-  }
-
-  void _subscribeToPrayerStatuses() {
-    if (currentPeriodId == null) return;
-
-    // Listen to period document changes
-    FirebaseFirestore.instance
-        .collection('bulkPeriods')
-        .doc(currentPeriodId)
-        .snapshots()
-        .listen(
-      (snapshot) {
-        if (snapshot.exists) {
-          final data = snapshot.data() as Map<String, dynamic>;
-          setState(() {
-            completedDays = data['completedDays'] ?? 0;
-            completedPrayersCount = data['completedPrayers'] ?? 0;
-            totalPrayers = data['totalPrayers'] ?? 0;
-            totalDays = data['totalDays'] ?? 0;
-          });
-        }
-      },
-      onError: (error) {
-        print('Error listening to period changes: $error');
-      },
-    );
-
-    // Listen to prayer status changes
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(FirebaseAuth.instance.currentUser?.uid)
-        .collection('prayers')
-        .where('periodId', isEqualTo: currentPeriodId)
-        .snapshots()
-        .listen(
-      (snapshot) {
-        if (snapshot.docs.isNotEmpty) {
-          setState(() {
-            _prayerCache = Map.fromEntries(
-              snapshot.docs.map((doc) => MapEntry(
-                    doc.id,
-                    Map<String, bool>.from({
-                      'fajr': doc.data()['fajr'] ?? false,
-                      'zuhr': doc.data()['zuhr'] ?? false,
-                      'asr': doc.data()['asr'] ?? false,
-                      'maghrib': doc.data()['maghrib'] ?? false,
-                      'isha': doc.data()['isha'] ?? false,
-                    }),
-                  )),
-            );
-          });
-        }
-      },
-      onError: (error) {
-        print('Error listening to prayer changes: $error');
-      },
-    );
   }
 
   @override
@@ -335,134 +417,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
       }
     } catch (e) {
       print('Error loading active period: $e');
-    }
-  }
-
-  Future<void> _updateProgressCounters() async {
-    if (currentPeriodId == null) return;
-
-    try {
-      // First check if the period document exists
-      final periodDoc = await FirebaseFirestore.instance
-          .collection('bulkPeriods')
-          .doc(currentPeriodId)
-          .get();
-
-      if (!periodDoc.exists) {
-        print('Period document not found');
-        return;
-      }
-
-      QuerySnapshot prayers = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(FirebaseAuth.instance.currentUser?.uid)
-          .collection('prayers')
-          .where('periodId', isEqualTo: currentPeriodId)
-          .get();
-
-      int prayersCount = 0;
-      int daysCount = 0;
-
-      for (var doc in prayers.docs) {
-        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        int dayCompletedPrayers = 0;
-
-        if (data['fajr'] == true) dayCompletedPrayers++;
-        if (data['zuhr'] == true) dayCompletedPrayers++;
-        if (data['asr'] == true) dayCompletedPrayers++;
-        if (data['maghrib'] == true) dayCompletedPrayers++;
-        if (data['isha'] == true) dayCompletedPrayers++;
-
-        prayersCount += dayCompletedPrayers;
-        if (dayCompletedPrayers == 5) daysCount++;
-      }
-
-      // Update Firestore
-      await FirebaseFirestore.instance
-          .collection('bulkPeriods')
-          .doc(currentPeriodId)
-          .update({
-        'completedPrayers': prayersCount,
-        'completedDays': daysCount,
-      });
-
-      // Update local state
-      setState(() {
-        completedPrayersCount = prayersCount;
-        completedDays = daysCount;
-      });
-    } catch (e) {
-      print('Error updating progress counters: $e');
-    }
-  }
-
-  Future<void> _updatePrayerStatus(
-      String prayerId, String prayer, bool value) async {
-    try {
-      // Update local cache
-      setState(() {
-        if (_prayerCache[prayerId] == null) {
-          _prayerCache[prayerId] = {};
-        }
-        _prayerCache[prayerId]![prayer] = value;
-      });
-
-      // Update Firestore
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(FirebaseAuth.instance.currentUser?.uid)
-          .collection('prayers')
-          .doc(prayerId)
-          .set({prayer: value}, SetOptions(merge: true));
-
-      // Check completion and update progress
-      await _updateProgressCounters();
-    } catch (e) {
-      print('Error updating prayer status: $e');
-      // Revert local cache if update fails
-      setState(() {
-        _prayerCache[prayerId]![prayer] = !value;
-      });
-    }
-  }
-
-  Future<void> _deletePeriod() async {
-    try {
-      if (currentPeriodId != null) {
-        await FirebaseFirestore.instance
-            .collection('bulkPeriods')
-            .doc(currentPeriodId)
-            .delete();
-
-        // Delete all prayers for this period
-        final prayers = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(FirebaseAuth.instance.currentUser?.uid)
-            .collection('prayers')
-            .where('periodId', isEqualTo: currentPeriodId)
-            .get();
-
-        for (var doc in prayers.docs) {
-          await doc.reference.delete();
-        }
-
-        setState(() {
-          currentPeriodId = null;
-          completedDays = 0;
-          totalDays = 0;
-          completedPrayersCount = 0;
-          totalPrayers = 0;
-          showDatePickers = true;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Period deleted successfully')),
-        );
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to delete period: $e')),
-      );
     }
   }
 
