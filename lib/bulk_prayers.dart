@@ -11,6 +11,8 @@ class QazaPeriodPage extends StatefulWidget {
 
 class _QazaPeriodPageState extends State<QazaPeriodPage> {
   BulkPrayerService _bulkPrayerService = BulkPrayerService();
+  final Map<String, bool> _prayerStatuses = {};
+
   DateTime? startDate;
   DateTime? endDate;
   List<DailyPrayers> periodPrayers = [];
@@ -294,24 +296,106 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
       ),
     );
   }
+  // ... existing declarations ...
 
   Widget _buildPrayerCheckbox(DailyPrayer prayer, String name, bool value) {
+    String prayerId = '${prayer.id}_$name';
     return SizedBox(
       width: MediaQuery.of(context).size.width / 2 - 16,
       child: CheckboxListTile(
         title: Text(name),
-        value: value,
+        value: _prayerStatuses[prayerId] ?? value,
+        secondary: _prayerStatuses[prayerId] == true
+            ? Icon(Icons.check_circle, color: Colors.green)
+            : null,
         onChanged: (bool? newValue) {
-          if (newValue != null) {
-            _bulkPrayerService.updatePrayerStatus(
-              prayer.id!,
-              name,
-              newValue,
+          if (newValue != null && newValue != value) {
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: Text('Confirm Prayer'),
+                content: Text('Have you completed $name prayer?'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text('No'),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      Navigator.pop(context);
+                      setState(() {
+                        _prayerStatuses[prayerId] = newValue;
+                      });
+
+                      await _bulkPrayerService.updatePrayerStatus(
+                        prayer.id!,
+                        name.toLowerCase(),
+                        newValue,
+                      );
+// In _buildPrayerCheckbox after updatePrayerStatus
+                      await _bulkPrayerService
+                          .updatePeriodProgress(currentPeriodId!);
+                      // Check if all prayers for this day are completed
+                      bool allCompleted = _checkDayCompletion(prayer);
+                      if (allCompleted) {
+                        await _moveToCompleted(prayer);
+                      }
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('$name prayer marked as completed'),
+                          backgroundColor: Colors.green,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                    child: Text('Yes'),
+                  ),
+                ],
+              ),
             );
           }
         },
       ),
     );
+  }
+
+  bool _checkDayCompletion(DailyPrayer prayer) {
+    return prayer.fajr &&
+        prayer.zuhr &&
+        prayer.asr &&
+        prayer.maghrib &&
+        prayer.isha;
+  }
+
+  Future<void> _moveToCompleted(DailyPrayer prayer) async {
+    try {
+      await _bulkPrayerService.addCompletedPrayer(
+        CompletedPeriod(
+          startDate: prayer.date,
+          endDate: prayer.date,
+          days: 1,
+        ),
+      );
+
+      // Remove from active prayers
+      await _bulkPrayerService.removePrayer(prayer.id!);
+
+      setState(() {
+        // Clear statuses for this day
+        final prayerNames = ['fajr', 'zuhr', 'asr', 'maghrib', 'isha'];
+        for (var name in prayerNames) {
+          _prayerStatuses.remove('${prayer.id}_$name');
+        }
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error moving completed prayers: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   Future<void> _selectDate(bool isStart) async {
