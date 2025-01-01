@@ -13,13 +13,16 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
   BulkPrayerService _bulkPrayerService = BulkPrayerService();
   final Map<String, bool> _prayerStatuses = {};
   Map<String, Map<String, bool>> _prayerCache = {};
-
+  bool isLoading = true; // Add loading state
   int completedDays = 0;
+  int totalPrayers = 0;
+  int completedPrayersCount = 0;
+  bool showDatePickers = true;
 
   DateTime? startDate;
   DateTime? endDate;
   List<DailyPrayers> periodPrayers = [];
-  List<CompletedPeriod> completedPrayers = [];
+  List<CompletedPeriod> completedPeriods = [];
   int totalDays = 0;
   int displayDays = 7;
   String? currentPeriodId;
@@ -27,15 +30,376 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
   @override
   void initState() {
     super.initState();
-    _loadActivePeriod();
-    _subscribeToPrayerStatuses();
-    _loadPeriodProgress();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initialLoad();
+    });
+  }
+
+  Future<void> _initialLoad() async {
+    setState(() {
+      isLoading = true;
+    });
+    await _loadActivePeriod();
+    setState(() {
+      isLoading = false;
+    });
+  }
+
+  Future<void> _createNewPeriod() async {
+    setState(() {
+      isLoading = true;
+    });
+
+    try {
+      if (startDate == null || endDate == null) {
+        throw Exception('Start and end dates must be selected');
+      }
+
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) {
+        throw Exception('User not logged in');
+      }
+
+      // Calculate total days and prayers
+      final days = endDate!.difference(startDate!).inDays + 1;
+      final totalPrayersCount = days * 5;
+
+      // Create period document under user's collection
+      final periodRef = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('bulkPeriods') // Store under user's collection
+          .add({
+        'startDate': Timestamp.fromDate(startDate!),
+        'endDate': Timestamp.fromDate(endDate!),
+        'totalDays': days,
+        'completedDays': 0,
+        'totalPrayers': totalPrayersCount,
+        'completedPrayers': 0,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      final periodId = periodRef.id;
+
+      // Create prayers using batched write
+      final batch = FirebaseFirestore.instance.batch();
+      DateTime currentDate = startDate!;
+
+      while (!currentDate.isAfter(endDate!)) {
+        final prayerRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(userId)
+            .collection('prayers')
+            .doc();
+
+        batch.set(prayerRef, {
+          'date': Timestamp.fromDate(currentDate),
+          'periodId': periodId,
+          'fajr': false,
+          'zuhr': false,
+          'asr': false,
+          'maghrib': false,
+          'isha': false,
+        });
+
+        currentDate = currentDate.add(Duration(days: 1));
+      }
+
+      await batch.commit();
+
+      // Update state
+      setState(() {
+        currentPeriodId = periodId;
+        totalDays = days;
+        completedDays = 0;
+        totalPrayers = totalPrayersCount;
+        completedPrayersCount = 0;
+        showDatePickers = false;
+      });
+
+      // Remove the await here since it's a void function
+      _subscribeToPrayerStatuses(); // Just call the function directly
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Prayer period created successfully')),
+      );
+    } catch (e) {
+      print('Error creating period: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to create period: ${e.toString()}')),
+      );
+    } finally {
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  void _subscribeToPrayerStatuses() {
+    if (currentPeriodId == null) return;
+
+    // Listen to period document changes
+    FirebaseFirestore.instance
+        .collection('bulkPeriods')
+        .doc(currentPeriodId)
+        .snapshots()
+        .listen(
+      (snapshot) {
+        if (snapshot.exists) {
+          final data = snapshot.data() as Map<String, dynamic>;
+          setState(() {
+            completedDays = data['completedDays'] ?? 0;
+            completedPrayersCount = data['completedPrayers'] ?? 0;
+            totalPrayers = data['totalPrayers'] ?? 0;
+            totalDays = data['totalDays'] ?? 0;
+          });
+        }
+      },
+      onError: (error) {
+        print('Error listening to period changes: $error');
+      },
+    );
+
+    // Listen to prayer status changes
+    FirebaseFirestore.instance
+        .collection('users')
+        .doc(FirebaseAuth.instance.currentUser?.uid)
+        .collection('prayers')
+        .where('periodId', isEqualTo: currentPeriodId)
+        .snapshots()
+        .listen(
+      (snapshot) {
+        if (snapshot.docs.isNotEmpty) {
+          setState(() {
+            _prayerCache = Map.fromEntries(
+              snapshot.docs.map((doc) => MapEntry(
+                    doc.id,
+                    Map<String, bool>.from({
+                      'fajr': doc.data()['fajr'] ?? false,
+                      'zuhr': doc.data()['zuhr'] ?? false,
+                      'asr': doc.data()['asr'] ?? false,
+                      'maghrib': doc.data()['maghrib'] ?? false,
+                      'isha': doc.data()['isha'] ?? false,
+                    }),
+                  )),
+            );
+          });
+        }
+      },
+      onError: (error) {
+        print('Error listening to prayer changes: $error');
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Qaza Prayer Tracker'),
+        actions: [
+          if (currentPeriodId != null)
+            Center(
+              child: Padding(
+                padding: EdgeInsets.only(right: 16),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      '$completedDays/$totalDays days',
+                      style:
+                          TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      '$completedPrayersCount/$totalPrayers prayers',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+      body: isLoading
+          ? Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                if (showDatePickers) _buildDatePickers(),
+                Expanded(
+                    child: currentPeriodId == null
+                        ? Center(
+                            child: Text(
+                              showDatePickers
+                                  ? 'Select dates to start tracking prayers'
+                                  : 'No active period found',
+                            ),
+                          )
+                        : StreamBuilder<QuerySnapshot>(
+                            stream: FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(FirebaseAuth.instance.currentUser?.uid)
+                                .collection('prayers')
+                                .where('periodId', isEqualTo: currentPeriodId)
+                                .orderBy('date',
+                                    descending: false) // Only order by date
+                                .snapshots(),
+                            builder: (context, snapshot) {
+                              if (snapshot.hasError) {
+                                print(
+                                    'Stream error: ${snapshot.error}'); // Add error logging
+                                return Center(
+                                    child: Text(
+                                        'Error loading prayers: ${snapshot.error}'));
+                              }
+
+                              if (snapshot.connectionState ==
+                                  ConnectionState.waiting) {
+                                return Center(
+                                    child: CircularProgressIndicator());
+                              }
+
+                              if (!snapshot.hasData ||
+                                  snapshot.data!.docs.isEmpty) {
+                                return Center(
+                                    child: Text(
+                                        'No prayers found for this period'));
+                              }
+
+                              final prayers = snapshot.data!.docs.map((doc) {
+                                final data = doc.data() as Map<String, dynamic>;
+                                return DailyPrayer(
+                                  id: doc.id,
+                                  periodId: data['periodId'] as String,
+                                  date: (data['date'] as Timestamp).toDate(),
+                                  fajr: data['fajr'] ?? false,
+                                  zuhr: data['zuhr'] ?? false,
+                                  asr: data['asr'] ?? false,
+                                  maghrib: data['maghrib'] ?? false,
+                                  isha: data['isha'] ?? false,
+                                );
+                              }).toList();
+
+                              return ListView.builder(
+                                itemCount: prayers.length,
+                                itemBuilder: (context, index) {
+                                  return _buildPrayerCard(prayers[index]);
+                                },
+                              );
+                            },
+                          )),
+              ],
+            ),
+    );
+  }
+
+  Future<void> _loadActivePeriod() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) return;
+
+      final periodsSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection(
+              'bulkPeriods') // Changed from 'bulkPeriods' to user's collection
+          .orderBy('createdAt', descending: true)
+          .limit(1)
+          .get();
+
+      if (periodsSnapshot.docs.isNotEmpty) {
+        final periodDoc = periodsSnapshot.docs.first;
+        final data = periodDoc.data();
+
+        setState(() {
+          currentPeriodId = periodDoc.id;
+          totalDays = data['totalDays'] ?? 0;
+          completedDays = data['completedDays'] ?? 0;
+          totalPrayers = data['totalPrayers'] ?? 0;
+          completedPrayersCount = data['completedPrayers'] ?? 0;
+          showDatePickers = false;
+
+          if (data['startDate'] != null) {
+            startDate = (data['startDate'] as Timestamp).toDate();
+          }
+          if (data['endDate'] != null) {
+            endDate = (data['endDate'] as Timestamp).toDate();
+          }
+        });
+
+        // Immediately subscribe to prayer statuses after loading period
+        _subscribeToPrayerStatuses();
+      } else {
+        setState(() {
+          showDatePickers = true;
+        });
+      }
+    } catch (e) {
+      print('Error loading active period: $e');
+    }
+  }
+
+  Future<void> _updateProgressCounters() async {
+    if (currentPeriodId == null) return;
+
+    try {
+      // First check if the period document exists
+      final periodDoc = await FirebaseFirestore.instance
+          .collection('bulkPeriods')
+          .doc(currentPeriodId)
+          .get();
+
+      if (!periodDoc.exists) {
+        print('Period document not found');
+        return;
+      }
+
+      QuerySnapshot prayers = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(FirebaseAuth.instance.currentUser?.uid)
+          .collection('prayers')
+          .where('periodId', isEqualTo: currentPeriodId)
+          .get();
+
+      int prayersCount = 0;
+      int daysCount = 0;
+
+      for (var doc in prayers.docs) {
+        Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+        int dayCompletedPrayers = 0;
+
+        if (data['fajr'] == true) dayCompletedPrayers++;
+        if (data['zuhr'] == true) dayCompletedPrayers++;
+        if (data['asr'] == true) dayCompletedPrayers++;
+        if (data['maghrib'] == true) dayCompletedPrayers++;
+        if (data['isha'] == true) dayCompletedPrayers++;
+
+        prayersCount += dayCompletedPrayers;
+        if (dayCompletedPrayers == 5) daysCount++;
+      }
+
+      // Update Firestore
+      await FirebaseFirestore.instance
+          .collection('bulkPeriods')
+          .doc(currentPeriodId)
+          .update({
+        'completedPrayers': prayersCount,
+        'completedDays': daysCount,
+      });
+
+      // Update local state
+      setState(() {
+        completedPrayersCount = prayersCount;
+        completedDays = daysCount;
+      });
+    } catch (e) {
+      print('Error updating progress counters: $e');
+    }
   }
 
   Future<void> _updatePrayerStatus(
       String prayerId, String prayer, bool value) async {
     try {
-      // Update local cache first
+      // Update local cache
       setState(() {
         if (_prayerCache[prayerId] == null) {
           _prayerCache[prayerId] = {};
@@ -49,98 +413,56 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
           .doc(FirebaseAuth.instance.currentUser?.uid)
           .collection('prayers')
           .doc(prayerId)
-          .set(_prayerCache[prayerId]!, SetOptions(merge: true));
+          .set({prayer: value}, SetOptions(merge: true));
 
-      // After successful Firestore update, check if all prayers are completed
-      bool allCompleted = _checkAllPrayersCompleted(prayerId);
-      if (allCompleted) {
-        // Update the completed status in a separate collection
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(FirebaseAuth.instance.currentUser?.uid)
-            .collection('completedPrayers')
-            .doc(prayerId)
-            .set({
-          'completed': true,
-          'completedAt': FieldValue.serverTimestamp(),
-        });
-      }
+      // Check completion and update progress
+      await _updateProgressCounters();
     } catch (e) {
       print('Error updating prayer status: $e');
-      // Revert local cache if Firebase update fails
+      // Revert local cache if update fails
       setState(() {
         _prayerCache[prayerId]![prayer] = !value;
       });
-      throw e;
     }
   }
 
-// Add this method to check if all prayers for a day are completed
-  bool _checkAllPrayersCompleted(String prayerId) {
-    final prayers = _prayerCache[prayerId];
-    if (prayers == null) return false;
+  Future<void> _deletePeriod() async {
+    try {
+      if (currentPeriodId != null) {
+        await FirebaseFirestore.instance
+            .collection('bulkPeriods')
+            .doc(currentPeriodId)
+            .delete();
 
-    return prayers['fajr'] == true &&
-        prayers['zuhr'] == true &&
-        prayers['asr'] == true &&
-        prayers['maghrib'] == true &&
-        prayers['isha'] == true;
-  }
+        // Delete all prayers for this period
+        final prayers = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(FirebaseAuth.instance.currentUser?.uid)
+            .collection('prayers')
+            .where('periodId', isEqualTo: currentPeriodId)
+            .get();
 
-// Modify _subscribeToPrayerStatuses to handle both active and completed prayers
-  void _subscribeToPrayerStatuses() {
-    // Listen to active prayers
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(FirebaseAuth.instance.currentUser?.uid)
-        .collection('prayers')
-        .snapshots()
-        .listen((snapshot) {
-      setState(() {
-        _prayerCache = Map.fromEntries(
-          snapshot.docs.map((doc) => MapEntry(
-                doc.id,
-                Map<String, bool>.from(doc.data()),
-              )),
-        );
-      });
-    });
-
-    // Listen to completed prayers
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(FirebaseAuth.instance.currentUser?.uid)
-        .collection('completedPrayers')
-        .snapshots()
-        .listen((snapshot) {
-      for (var doc in snapshot.docs) {
-        final prayerId = doc.id;
-        if (_prayerCache[prayerId] != null) {
-          setState(() {
-            _prayerCache[prayerId]!['fajr'] = true;
-            _prayerCache[prayerId]!['zuhr'] = true;
-            _prayerCache[prayerId]!['asr'] = true;
-            _prayerCache[prayerId]!['maghrib'] = true;
-            _prayerCache[prayerId]!['isha'] = true;
-          });
+        for (var doc in prayers.docs) {
+          await doc.reference.delete();
         }
+
+        setState(() {
+          currentPeriodId = null;
+          completedDays = 0;
+          totalDays = 0;
+          completedPrayersCount = 0;
+          totalPrayers = 0;
+          showDatePickers = true;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Period deleted successfully')),
+        );
       }
-    });
-  }
-
-  Future<void> _loadPeriodProgress() async {
-    if (currentPeriodId == null) return;
-
-    final periodDoc = await FirebaseFirestore.instance
-        .collection('bulkPeriods')
-        .doc(currentPeriodId)
-        .get();
-
-    if (periodDoc.exists) {
-      setState(() {
-        totalDays = periodDoc.data()?['totalDays'] ?? 0;
-        completedDays = periodDoc.data()?['completedDays'] ?? 0;
-      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete period: $e')),
+      );
     }
   }
 
@@ -162,9 +484,7 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
       setState(() {
         completedDays++;
       });
-      await _bulkPrayerService.updatePeriodProgress(
-        currentPeriodId!,
-      );
+      await _updateProgressCounters();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -179,28 +499,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
           content: Text('Error moving completed prayers: $e'),
           backgroundColor: Colors.red,
         ),
-      );
-    }
-  }
-
-  Future<void> _createNewPeriod() async {
-    try {
-      final periodId = await _bulkPrayerService.createBulkPeriod(
-        startDate: startDate!,
-        endDate: endDate!,
-      );
-      final days = endDate!.difference(startDate!).inDays + 1;
-      setState(() {
-        currentPeriodId = periodId;
-        totalDays = days;
-        completedDays = 0;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('New prayer period created')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to create period: $e')),
       );
     }
   }
@@ -279,80 +577,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
         setState(() {});
       }
     }
-  }
-
-  void _addToCompletedPeriods(List<DailyPrayers> completed) {
-    if (completed.isEmpty) return;
-
-    DateTime periodStart = completed.first.date;
-    DateTime periodEnd = completed.last.date;
-
-    completedPrayers.add(CompletedPeriod(
-        startDate: periodStart, endDate: periodEnd, days: completed.length));
-  }
-
-  Future<void> _loadActivePeriod() async {
-    final periods = await _bulkPrayerService.getActivePeriods().first;
-    if (periods.isNotEmpty) {
-      setState(() => currentPeriodId = periods[0].id);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Qaza Prayer Tracker'),
-        actions: [
-          Center(
-            child: Padding(
-              padding: EdgeInsets.only(right: 16),
-              child: Text(
-                '$completedDays/$totalDays days',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: Icon(Icons.history),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => CompletedPrayersScreen()),
-            ),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _buildDatePickers(),
-          Expanded(
-            child: currentPeriodId == null
-                ? Center(child: Text('Select dates to start tracking prayers'))
-                : StreamBuilder<List<DailyPrayer>>(
-                    stream: _bulkPrayerService
-                        .getActivePeriodPrayers(currentPeriodId!),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return Center(child: CircularProgressIndicator());
-                      }
-
-                      if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                        return Center(child: Text('No prayers found'));
-                      }
-
-                      return ListView.builder(
-                        itemCount: snapshot.data!.length,
-                        itemBuilder: (context, index) {
-                          final prayer = snapshot.data![index];
-                          return _buildPrayerCard(prayer);
-                        },
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildDatePickers() {

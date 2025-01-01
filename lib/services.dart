@@ -861,14 +861,6 @@ class BulkPrayerService {
     });
   }
 
-  CollectionReference get _bulkPrayersCollection {
-    if (currentUserId == null) throw Exception('No user logged in');
-    return _firestore
-        .collection('users')
-        .doc(currentUserId)
-        .collection('bulkPrayers');
-  }
-
   CollectionReference get _completedBulkPrayersCollection {
     if (currentUserId == null) throw Exception('No user logged in');
     return _firestore
@@ -913,6 +905,22 @@ class BulkPrayerService {
       print('Error adding bulk prayers: $e');
       throw Exception('Failed to add prayers: $e');
     }
+  }
+
+  CollectionReference get _prayersCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('user_prayers'); // Add prefix
+  }
+
+  CollectionReference get _bulkPrayersCollection {
+    if (currentUserId == null) throw Exception('No user logged in');
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('bulkPrayers');
   }
 
   CollectionReference get _bulkPeriodsCollection {
