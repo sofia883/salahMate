@@ -31,6 +31,125 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
 // Here's the fixed version:
 // Add this to your state variables at the top of _QazaPeriodPageState
   bool _isProcessing = false;
+  // Modify the _handlePrayerCompletion function to show confirmation dialogs
+  // Modify _handlePrayerCompletion to use the new dialog function
+  Future<void> _handlePrayerCompletion(
+      DailyPrayer prayer, String prayerName, bool newValue) async {
+    if (_isProcessing) return;
+
+    // Show confirmation dialog based on whether marking or unmarking
+    bool shouldProceed = await _showPrayerConfirmationDialog(
+      title: newValue ? 'Mark Prayer' : 'Unmark Prayer',
+      message: newValue
+          ? 'Have you completed $prayerName prayer?'
+          : 'Are you sure you want to unmark $prayerName prayer?',
+    );
+
+    if (!shouldProceed) return;
+
+    try {
+      setState(() {
+        _isProcessing = true;
+        isLoading = true;
+      });
+
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) throw Exception('User not logged in');
+
+      final batch = FirebaseFirestore.instance.batch();
+
+      final prayerRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('prayers')
+          .doc(prayer.id);
+
+      batch.update(prayerRef, {
+        prayerName.toLowerCase(): newValue,
+        'lastUpdated': FieldValue.serverTimestamp()
+      });
+
+      final periodRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('bulkPeriods')
+          .doc(currentPeriodId);
+
+      final periodDoc = await periodRef.get();
+      final currentData = periodDoc.data() ?? {};
+      final currentPrayerCount = currentData['completedPrayers'] ?? 0;
+      final currentDayCount = currentData['completedDays'] ?? 0;
+
+      final prayerDoc = await prayerRef.get();
+      final prayerData = prayerDoc.data() as Map<String, dynamic>;
+
+      final updatedPrayers = {
+        'fajr': prayerData['fajr'] ?? false,
+        'zuhr': prayerData['zuhr'] ?? false,
+        'asr': prayerData['asr'] ?? false,
+        'maghrib': prayerData['maghrib'] ?? false,
+        'isha': prayerData['isha'] ?? false,
+        prayerName.toLowerCase(): newValue,
+      };
+
+      final bool willBeCompleted =
+          updatedPrayers.values.every((v) => v == true);
+      final bool wasCompleted = prayerData.values.every((v) => v == true);
+
+      final prayerCountChange = newValue ? 1 : -1;
+      final dayCountChange = willBeCompleted && !wasCompleted
+          ? 1
+          : !willBeCompleted && wasCompleted
+              ? -1
+              : 0;
+
+      batch.update(periodRef, {
+        'completedPrayers': currentPrayerCount + prayerCountChange,
+        'completedDays': currentDayCount + dayCountChange,
+        'lastUpdated': FieldValue.serverTimestamp()
+      });
+
+      await batch.commit();
+
+      if (mounted) {
+        setState(() {
+          completedPrayersCount = currentPrayerCount + prayerCountChange;
+          completedDays = currentDayCount + dayCountChange;
+          _prayerCache[prayer.id] ??= {};
+          _prayerCache[prayer.id]![prayerName.toLowerCase()] = newValue;
+          _prayerCache[prayer.id]!['isCompleted'] = willBeCompleted;
+        });
+
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(newValue
+                ? '$prayerName prayer marked as completed'
+                : '$prayerName prayer unmarked'),
+            backgroundColor: newValue ? Colors.green : Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error updating prayer: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update prayer'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          isLoading = false;
+        });
+      }
+    }
+  }
+
   Widget _buildPrayerCard(DailyPrayer prayer) {
     bool isCompleted = prayer.fajr &&
         prayer.zuhr &&
@@ -136,10 +255,19 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
     );
   }
 
-// Add this new function to handle marking all prayers for a day
   Future<void> _handleBatchPrayerCompletion(
       DailyPrayer prayer, bool newValue) async {
     if (_isProcessing) return;
+
+    // Show confirmation dialog for batch operation
+    bool shouldProceed = await _showPrayerConfirmationDialog(
+      title: newValue ? 'Mark All Prayers' : 'Unmark All Prayers',
+      message: newValue
+          ? 'Have you completed all prayers for ${DateFormat('d').format(prayer.date)}${_getDaySuffix(prayer.date.day)} ${DateFormat('MMMM yyyy').format(prayer.date)}?'
+          : 'Are you sure you want to unmark all prayers for ${DateFormat('d').format(prayer.date)}${_getDaySuffix(prayer.date.day)} ${DateFormat('MMMM yyyy').format(prayer.date)}?',
+    );
+
+    if (!shouldProceed) return;
 
     try {
       setState(() {
@@ -191,7 +319,7 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
           oldData['maghrib'] == true &&
           oldData['isha'] == true;
 
-      // Calculate changes
+      // Calculate changes for all 5 prayers
       final int completedPrayersChange = newValue
           ? (5 - _countCompletedPrayers(oldData))
           : -_countCompletedPrayers(oldData);
@@ -211,7 +339,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
 
       await batch.commit();
 
-      // Update local state
       if (mounted) {
         setState(() {
           _prayerCache[prayer.id] = {
@@ -225,129 +352,23 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
           completedPrayersCount = currentPrayerCount + completedPrayersChange;
           completedDays = currentDayCount + dayCountChange;
         });
+
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(newValue
+                ? 'All prayers marked as completed'
+                : 'All prayers unmarked'),
+            backgroundColor: newValue ? Colors.green : Colors.orange,
+          ),
+        );
       }
     } catch (e) {
       print('Error in batch prayer completion: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to update prayers'),
-          backgroundColor: Colors.red,
-        ),
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-          isLoading = false;
-        });
-      }
-    }
-  }
-
-// Helper function to count completed prayers
-  int _countCompletedPrayers(Map<String, dynamic> data) {
-    return [
-      data['fajr'] ?? false,
-      data['zuhr'] ?? false,
-      data['asr'] ?? false,
-      data['maghrib'] ?? false,
-      data['isha'] ?? false,
-    ].where((completed) => completed).length;
-  }
-
-  Future<void> _handlePrayerCompletion(
-      DailyPrayer prayer, String prayerName, bool newValue) async {
-    // Prevent multiple simultaneous updates
-    if (_isProcessing) return;
-
-    try {
-      setState(() {
-        _isProcessing = true;
-        isLoading = true; // Show loading only once
-      });
-
-      final userId = FirebaseAuth.instance.currentUser?.uid;
-      if (userId == null) {
-        throw Exception('User not logged in');
-      }
-
-      // Perform all updates in a single batch
-      final batch = FirebaseFirestore.instance.batch();
-
-      // Update prayer document
-      final prayerRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .collection('prayers')
-          .doc(prayer.id);
-
-      batch.update(prayerRef, {
-        prayerName.toLowerCase(): newValue,
-        'lastUpdated': FieldValue.serverTimestamp()
-      });
-
-      // Update period document
-      final periodRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .collection('bulkPeriods')
-          .doc(currentPeriodId);
-
-      // Get current counts once
-      final periodDoc = await periodRef.get();
-      final currentData = periodDoc.data() ?? {};
-      final currentPrayerCount = currentData['completedPrayers'] ?? 0;
-      final currentDayCount = currentData['completedDays'] ?? 0;
-
-      // Calculate new counts
-      final allPrayers = await prayerRef.get();
-      final prayerData = allPrayers.data() as Map<String, dynamic>;
-
-      final updatedPrayers = {
-        'fajr': prayerData['fajr'] ?? false,
-        'zuhr': prayerData['zuhr'] ?? false,
-        'asr': prayerData['asr'] ?? false,
-        'maghrib': prayerData['maghrib'] ?? false,
-        'isha': prayerData['isha'] ?? false,
-        prayerName.toLowerCase(): newValue,
-      };
-
-      final bool willBeCompleted =
-          updatedPrayers.values.every((v) => v == true);
-      final bool wasCompleted = prayerData.values.every((v) => v == true);
-
-      final prayerCountChange = newValue ? 1 : -1;
-      final dayCountChange = willBeCompleted && !wasCompleted
-          ? 1
-          : !willBeCompleted && wasCompleted
-              ? -1
-              : 0;
-
-      batch.update(periodRef, {
-        'completedPrayers': currentPrayerCount + prayerCountChange,
-        'completedDays': currentDayCount + dayCountChange,
-        'lastUpdated': FieldValue.serverTimestamp()
-      });
-
-      // Commit all changes at once
-      await batch.commit();
-
-      // Update local state once
-      if (mounted) {
-        setState(() {
-          completedPrayersCount = currentPrayerCount + prayerCountChange;
-          completedDays = currentDayCount + dayCountChange;
-          _prayerCache[prayer.id] ??= {};
-          _prayerCache[prayer.id]![prayerName.toLowerCase()] = newValue;
-          _prayerCache[prayer.id]!['isCompleted'] = willBeCompleted;
-        });
-      }
-    } catch (e) {
-      print('Error updating prayer: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to update prayer'),
+            content: Text('Failed to update prayers'),
             backgroundColor: Colors.red,
           ),
         );
@@ -360,6 +381,41 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
         });
       }
     }
+  }
+
+  Future<bool> _showPrayerConfirmationDialog({
+    required String title,
+    required String message,
+  }) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(title),
+            content: Text(message),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: Text('No'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text('Yes'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+// Helper function to count completed prayers
+  int _countCompletedPrayers(Map<String, dynamic> data) {
+    return [
+      data['fajr'] ?? false,
+      data['zuhr'] ?? false,
+      data['asr'] ?? false,
+      data['maghrib'] ?? false,
+      data['isha'] ?? false,
+    ].where((completed) => completed).length;
   }
 
 // Modify your _subscribeToPrayerStatuses to reduce unnecessary updates
@@ -969,131 +1025,374 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
 
   @override
   Widget build(BuildContext context) {
+    bool isAllCompleted = currentPeriodId != null &&
+        completedPrayersCount == totalPrayers &&
+        totalPrayers > 0;
+
     return Scaffold(
-      appBar: AppBar(title: Text('Qaza Prayer Tracker'), actions: [
-        // Add New Period button
-        IconButton(
-          icon: Icon(Icons.add),
-          tooltip: 'Create New Period',
-          onPressed: () {
-            showDialog(
-              context: context,
-              builder: (context) => AlertDialog(
-                title: Text('Create New Period?'),
-                content: Text(currentPeriodId != null
-                    ? 'This will end your current period. Continue?'
-                    : 'Start tracking a new prayer period?'),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: Text('Cancel'),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      setState(() {
-                        currentPeriodId = null;
-                        showDatePickers = true;
-                        startDate = null;
-                        endDate = null;
-                      });
-                    },
-                    child: Text('Create New'),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-        if (currentPeriodId != null)
-          Center(
-            child: Padding(
-              padding: EdgeInsets.only(right: 16),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    '$completedDays/$totalDays days',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    '$completedPrayersCount/$totalPrayers prayers',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ],
+      appBar: AppBar(
+        title: Text('Qaza Prayer Tracker'),
+        actions: [
+          if (!showDatePickers &&
+              currentPeriodId != null &&
+              !isAllCompleted) ...[
+            // Progress indicators
+            Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      '$completedDays/$totalDays days',
+                      style:
+                          TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      '$completedPrayersCount/$totalPrayers prayers',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-      ]),
+            // Plus icon for new period
+            IconButton(
+              icon: Icon(Icons.add),
+              tooltip: 'Create New Period',
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text('Create New Period?'),
+                    content:
+                        Text('This will end your current period. Continue?'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          setState(() {
+                            currentPeriodId = null;
+                            showDatePickers = true;
+                            startDate = null;
+                            endDate = null;
+                          });
+                        },
+                        child: Text('Create New'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+          if (showDatePickers || isAllCompleted)
+            IconButton(
+              icon: Icon(Icons.add),
+              tooltip: 'Start New Period',
+              onPressed: () {
+                setState(() {
+                  currentPeriodId = null;
+                  showDatePickers = true;
+                  startDate = null;
+                  endDate = null;
+                });
+              },
+            ),
+        ],
+      ),
       body: isLoading
           ? Center(child: CircularProgressIndicator())
           : Column(
               children: [
                 if (showDatePickers) _buildDatePickers(),
-                Expanded(
+                if (isAllCompleted)
+                  Expanded(child: _buildCompletionScreen())
+                else
+                  Expanded(
                     child: currentPeriodId == null
-                        ? Center(
-                            child: Text(
-                              showDatePickers
-                                  ? 'Select dates to start tracking prayers'
-                                  : 'No active period found',
-                            ),
-                          )
-                        : StreamBuilder<QuerySnapshot>(
-                            stream: FirebaseFirestore.instance
-                                .collection('users')
-                                .doc(FirebaseAuth.instance.currentUser?.uid)
-                                .collection('prayers')
-                                .where('periodId', isEqualTo: currentPeriodId)
-                                .orderBy('date',
-                                    descending: false) // Only order by date
-                                .snapshots(),
-                            builder: (context, snapshot) {
-                              if (snapshot.hasError) {
-                                print(
-                                    'Stream error: ${snapshot.error}'); // Add error logging
-                                return Center(
-                                    child: Text(
-                                        'Error loading prayers: ${snapshot.error}'));
-                              }
-
-                              if (snapshot.connectionState ==
-                                  ConnectionState.waiting) {
-                                return Center(
-                                    child: CircularProgressIndicator());
-                              }
-
-                              if (!snapshot.hasData ||
-                                  snapshot.data!.docs.isEmpty) {
-                                return Center(
-                                    child: Text(
-                                        'No prayers found for this period'));
-                              }
-
-                              final prayers = snapshot.data!.docs.map((doc) {
-                                final data = doc.data() as Map<String, dynamic>;
-                                return DailyPrayer(
-                                  id: doc.id,
-                                  periodId: data['periodId'] as String,
-                                  date: (data['date'] as Timestamp).toDate(),
-                                  fajr: data['fajr'] ?? false,
-                                  zuhr: data['zuhr'] ?? false,
-                                  asr: data['asr'] ?? false,
-                                  maghrib: data['maghrib'] ?? false,
-                                  isha: data['isha'] ?? false,
-                                );
-                              }).toList();
-
-                              return ListView.builder(
-                                itemCount: prayers.length,
-                                itemBuilder: (context, index) {
-                                  return _buildPrayerCard(prayers[index]);
-                                },
-                              );
-                            },
-                          )),
+                        ? _buildEmptyState()
+                        : _buildPrayersList(),
+                  ),
               ],
             ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.calendar_today, size: 64, color: Colors.grey),
+          SizedBox(height: 16),
+          Text(
+            showDatePickers
+                ? 'Select dates to start tracking prayers'
+                : 'No active period found',
+            style: TextStyle(
+              fontSize: 18,
+              color: Colors.grey[600],
+            ),
+          ),
+          if (!showDatePickers)
+            ElevatedButton.icon(
+              onPressed: () {
+                setState(() {
+                  showDatePickers = true;
+                });
+              },
+              icon: Icon(Icons.add),
+              label: Text('Start New Period'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompletionMessage() {
+    if (startDate == null || endDate == null) return Container();
+
+    return Container(
+      padding: EdgeInsets.all(24),
+      child: Card(
+        elevation: 4,
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.celebration,
+                size: 64,
+                color: Colors.amber,
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Congratulations! 🎉',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green,
+                ),
+              ),
+              SizedBox(height: 16),
+              Text(
+                'You have completed all prayers for the period:',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16),
+              ),
+              SizedBox(height: 8),
+              Text(
+                '${DateFormat('d').format(startDate!)}${_getDaySuffix(startDate!.day)} ${DateFormat('MMMM yyyy').format(startDate!)} to\n${DateFormat('d').format(endDate!)}${_getDaySuffix(endDate!.day)} ${DateFormat('MMMM yyyy').format(endDate!)}',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue[700],
+                ),
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Total Prayers Completed: $completedPrayersCount',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey[700],
+                ),
+              ),
+              SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    currentPeriodId = null;
+                    showDatePickers = true;
+                    startDate = null;
+                    endDate = null;
+                  });
+                },
+                icon: Icon(Icons.add),
+                label: Text('Start New Period'),
+                style: ElevatedButton.styleFrom(
+                  padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPrayersList() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(FirebaseAuth.instance.currentUser?.uid)
+          .collection('prayers')
+          .where('periodId', isEqualTo: currentPeriodId)
+          .orderBy('date', descending: false)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Center(
+              child: Text('Error loading prayers: ${snapshot.error}'));
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return Center(child: CircularProgressIndicator());
+        }
+
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return Center(child: Text('No prayers found for this period'));
+        }
+
+        final prayers = snapshot.data!.docs.map((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return DailyPrayer(
+            id: doc.id,
+            periodId: data['periodId'] as String,
+            date: (data['date'] as Timestamp).toDate(),
+            fajr: data['fajr'] ?? false,
+            zuhr: data['zuhr'] ?? false,
+            asr: data['asr'] ?? false,
+            maghrib: data['maghrib'] ?? false,
+            isha: data['isha'] ?? false,
+          );
+        }).toList();
+
+        return ListView.builder(
+          itemCount: prayers.length,
+          itemBuilder: (context, index) {
+            return _buildPrayerCard(prayers[index]);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildCompletionScreen() {
+    if (startDate == null || endDate == null) return Container();
+
+    return Container(
+      color: Colors.white,
+      child: Column(
+        children: [
+          // Top decorative wave
+          Container(
+            height: 160,
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.only(
+                bottomLeft: Radius.circular(30),
+                bottomRight: Radius.circular(30),
+              ),
+            ),
+            child: Center(
+              child: Icon(
+                Icons.celebration,
+                size: 80,
+                color: Colors.green,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Period Completed!',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green.shade700,
+                    ),
+                  ),
+                  SizedBox(height: 24),
+                  _buildCompletionMetric(
+                    'Period',
+                    '${DateFormat('d').format(startDate!)}${_getDaySuffix(startDate!.day)} ${DateFormat('MMM yyyy').format(startDate!)}\nto\n${DateFormat('d').format(endDate!)}${_getDaySuffix(endDate!.day)} ${DateFormat('MMM yyyy').format(endDate!)}',
+                    Icons.calendar_month,
+                  ),
+                  SizedBox(height: 20),
+                  _buildCompletionMetric(
+                    'Days Completed',
+                    '$completedDays / $totalDays',
+                    Icons.view_day,
+                  ),
+                  SizedBox(height: 20),
+                  _buildCompletionMetric(
+                    'Total Prayers',
+                    '$completedPrayersCount',
+                    Icons.check_circle,
+                  ),
+                  SizedBox(height: 32),
+                  Text(
+                    'Congratulations on completing all your prayers for this period! 🎉',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompletionMetric(String label, String value, IconData icon) {
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.green.shade50,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: Colors.green.shade700),
+          ),
+          SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey.shade900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
