@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:async/async.dart';
 
 class QazaPeriodPage extends StatefulWidget {
   @override
@@ -18,35 +19,674 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
   int totalPrayers = 0;
   int completedPrayersCount = 0;
   bool showDatePickers = true;
-
+  bool _isUpdatingPrayer = false;
   DateTime? startDate;
   DateTime? endDate;
-  List<DailyPrayers> periodPrayers = [];
+  List<DailyPrayer> periodPrayers = [];
   List<CompletedPeriod> completedPeriods = [];
   int totalDays = 0;
   int displayDays = 7;
   String? currentPeriodId;
-// First, let's improve the _updatePrayerStatus function to handle progress updates better
+  // The main issue is in the _handlePrayerCompletion function where the counts are not being properly preserved
+// Here's the fixed version:
+// Add this to your state variables at the top of _QazaPeriodPageState
+  bool _isProcessing = false;
+  Widget _buildPrayerCard(DailyPrayer prayer) {
+    bool isCompleted = prayer.fajr &&
+        prayer.zuhr &&
+        prayer.asr &&
+        prayer.maghrib &&
+        prayer.isha;
+
+    return Card(
+      margin: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: isCompleted
+          ? ListTile(
+              contentPadding: EdgeInsets.all(8),
+              leading: Icon(Icons.check_circle, color: Colors.green),
+              title: Text(
+                DateFormat('d').format(prayer.date) +
+                    _getDaySuffix(prayer.date.day) +
+                    ' ' +
+                    DateFormat('MMMM yyyy').format(prayer.date),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.green,
+                ),
+              ),
+              subtitle: Text(
+                'All prayers completed',
+                style: TextStyle(color: Colors.green, fontSize: 12),
+              ),
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Date header with checkbox for all prayers
+                Container(
+                  color: isCompleted
+                      ? Colors.green.withOpacity(0.1)
+                      : Colors.transparent,
+                  child: Row(
+                    children: [
+                      Checkbox(
+                        value: isCompleted,
+                        activeColor: Colors.green,
+                        onChanged: (bool? newValue) async {
+                          if (newValue != null) {
+                            await _handleBatchPrayerCompletion(
+                                prayer, newValue);
+                          }
+                        },
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: EdgeInsets.all(8),
+                          child: Text(
+                            DateFormat('d').format(prayer.date) +
+                                _getDaySuffix(prayer.date.day) +
+                                ' ' +
+                                DateFormat('MMMM yyyy').format(prayer.date),
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Prayer tiles for incomplete prayers
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 8),
+                  child: Wrap(
+                    children: [
+                      _buildPrayerTile(prayer, 'Fajr', prayer.fajr),
+                      _buildPrayerTile(prayer, 'Zuhr', prayer.zuhr),
+                      _buildPrayerTile(prayer, 'Asr', prayer.asr),
+                      _buildPrayerTile(prayer, 'Maghrib', prayer.maghrib),
+                      _buildPrayerTile(prayer, 'Isha', prayer.isha),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildPrayerTile(DailyPrayer prayer, String name, bool value) {
+    return SizedBox(
+      width: MediaQuery.of(context).size.width / 2 - 24,
+      child: ListTile(
+        dense: true,
+        leading: Icon(
+          value ? Icons.check_circle : Icons.circle_outlined,
+          color: value ? Colors.green : Colors.grey,
+        ),
+        title: Text(
+          name,
+          style: TextStyle(
+            color: value ? Colors.green : Colors.black,
+            fontWeight: value ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+        onTap: () => _handlePrayerCompletion(prayer, name, !value),
+      ),
+    );
+  }
+
+// Add this new function to handle marking all prayers for a day
+  Future<void> _handleBatchPrayerCompletion(
+      DailyPrayer prayer, bool newValue) async {
+    if (_isProcessing) return;
+
+    try {
+      setState(() {
+        _isProcessing = true;
+        isLoading = true;
+      });
+
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) throw Exception('User not logged in');
+
+      final batch = FirebaseFirestore.instance.batch();
+
+      // Update prayer document
+      final prayerRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('prayers')
+          .doc(prayer.id);
+
+      // Update all prayers at once
+      batch.update(prayerRef, {
+        'fajr': newValue,
+        'zuhr': newValue,
+        'asr': newValue,
+        'maghrib': newValue,
+        'isha': newValue,
+        'lastUpdated': FieldValue.serverTimestamp()
+      });
+
+      // Get current period data
+      final periodRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('bulkPeriods')
+          .doc(currentPeriodId);
+
+      final periodDoc = await periodRef.get();
+      final currentData = periodDoc.data() ?? {};
+
+      // Calculate prayer count change (5 prayers per day)
+      final currentPrayerCount = currentData['completedPrayers'] ?? 0;
+      final currentDayCount = currentData['completedDays'] ?? 0;
+
+      final prayerDoc = await prayerRef.get();
+      final oldData = prayerDoc.data() as Map<String, dynamic>;
+      final wasCompleted = oldData['fajr'] == true &&
+          oldData['zuhr'] == true &&
+          oldData['asr'] == true &&
+          oldData['maghrib'] == true &&
+          oldData['isha'] == true;
+
+      // Calculate changes
+      final int completedPrayersChange = newValue
+          ? (5 - _countCompletedPrayers(oldData))
+          : -_countCompletedPrayers(oldData);
+
+      final int dayCountChange = newValue && !wasCompleted
+          ? 1
+          : !newValue && wasCompleted
+              ? -1
+              : 0;
+
+      // Update period document
+      batch.update(periodRef, {
+        'completedPrayers': currentPrayerCount + completedPrayersChange,
+        'completedDays': currentDayCount + dayCountChange,
+        'lastUpdated': FieldValue.serverTimestamp()
+      });
+
+      await batch.commit();
+
+      // Update local state
+      if (mounted) {
+        setState(() {
+          _prayerCache[prayer.id] = {
+            'fajr': newValue,
+            'zuhr': newValue,
+            'asr': newValue,
+            'maghrib': newValue,
+            'isha': newValue,
+            'isCompleted': newValue,
+          };
+          completedPrayersCount = currentPrayerCount + completedPrayersChange;
+          completedDays = currentDayCount + dayCountChange;
+        });
+      }
+    } catch (e) {
+      print('Error in batch prayer completion: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to update prayers'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          isLoading = false;
+        });
+      }
+    }
+  }
+
+// Helper function to count completed prayers
+  int _countCompletedPrayers(Map<String, dynamic> data) {
+    return [
+      data['fajr'] ?? false,
+      data['zuhr'] ?? false,
+      data['asr'] ?? false,
+      data['maghrib'] ?? false,
+      data['isha'] ?? false,
+    ].where((completed) => completed).length;
+  }
+
+  Future<void> _handlePrayerCompletion(
+      DailyPrayer prayer, String prayerName, bool newValue) async {
+    // Prevent multiple simultaneous updates
+    if (_isProcessing) return;
+
+    try {
+      setState(() {
+        _isProcessing = true;
+        isLoading = true; // Show loading only once
+      });
+
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) {
+        throw Exception('User not logged in');
+      }
+
+      // Perform all updates in a single batch
+      final batch = FirebaseFirestore.instance.batch();
+
+      // Update prayer document
+      final prayerRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('prayers')
+          .doc(prayer.id);
+
+      batch.update(prayerRef, {
+        prayerName.toLowerCase(): newValue,
+        'lastUpdated': FieldValue.serverTimestamp()
+      });
+
+      // Update period document
+      final periodRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('bulkPeriods')
+          .doc(currentPeriodId);
+
+      // Get current counts once
+      final periodDoc = await periodRef.get();
+      final currentData = periodDoc.data() ?? {};
+      final currentPrayerCount = currentData['completedPrayers'] ?? 0;
+      final currentDayCount = currentData['completedDays'] ?? 0;
+
+      // Calculate new counts
+      final allPrayers = await prayerRef.get();
+      final prayerData = allPrayers.data() as Map<String, dynamic>;
+
+      final updatedPrayers = {
+        'fajr': prayerData['fajr'] ?? false,
+        'zuhr': prayerData['zuhr'] ?? false,
+        'asr': prayerData['asr'] ?? false,
+        'maghrib': prayerData['maghrib'] ?? false,
+        'isha': prayerData['isha'] ?? false,
+        prayerName.toLowerCase(): newValue,
+      };
+
+      final bool willBeCompleted =
+          updatedPrayers.values.every((v) => v == true);
+      final bool wasCompleted = prayerData.values.every((v) => v == true);
+
+      final prayerCountChange = newValue ? 1 : -1;
+      final dayCountChange = willBeCompleted && !wasCompleted
+          ? 1
+          : !willBeCompleted && wasCompleted
+              ? -1
+              : 0;
+
+      batch.update(periodRef, {
+        'completedPrayers': currentPrayerCount + prayerCountChange,
+        'completedDays': currentDayCount + dayCountChange,
+        'lastUpdated': FieldValue.serverTimestamp()
+      });
+
+      // Commit all changes at once
+      await batch.commit();
+
+      // Update local state once
+      if (mounted) {
+        setState(() {
+          completedPrayersCount = currentPrayerCount + prayerCountChange;
+          completedDays = currentDayCount + dayCountChange;
+          _prayerCache[prayer.id] ??= {};
+          _prayerCache[prayer.id]![prayerName.toLowerCase()] = newValue;
+          _prayerCache[prayer.id]!['isCompleted'] = willBeCompleted;
+        });
+      }
+    } catch (e) {
+      print('Error updating prayer: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update prayer'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          isLoading = false;
+        });
+      }
+    }
+  }
+
+// Modify your _subscribeToPrayerStatuses to reduce unnecessary updates
+  void _subscribeToPrayerStatuses() {
+    if (currentPeriodId == null) return;
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+
+    // Use a single merged stream for both period and prayers
+    final periodStream = FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('bulkPeriods')
+        .doc(currentPeriodId)
+        .snapshots();
+
+    final prayersStream = FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('prayers')
+        .where('periodId', isEqualTo: currentPeriodId)
+        .snapshots();
+
+    // Combine streams to update UI only once when either changes
+    StreamGroup.merge([periodStream, prayersStream]).listen((snapshot) {
+      if (!mounted) return;
+
+      if (snapshot is DocumentSnapshot) {
+        // Period document update
+        if (snapshot.exists) {
+          final data = snapshot.data() as Map<String, dynamic>;
+          setState(() {
+            completedDays = data['completedDays'] ?? 0;
+            completedPrayersCount = data['completedPrayers'] ?? 0;
+            totalPrayers = data['totalPrayers'] ?? 0;
+          });
+        }
+      } else if (snapshot is QuerySnapshot) {
+        // Prayers update
+        final updatedCache = Map<String, Map<String, bool>>.from(_prayerCache);
+
+        for (var doc in snapshot.docs) {
+          final data = doc.data() as Map<String, dynamic>;
+          final isCompleted = data['fajr'] == true &&
+              data['zuhr'] == true &&
+              data['asr'] == true &&
+              data['maghrib'] == true &&
+              data['isha'] == true;
+
+          updatedCache[doc.id] = {
+            'fajr': data['fajr'] ?? false,
+            'zuhr': data['zuhr'] ?? false,
+            'asr': data['asr'] ?? false,
+            'maghrib': data['maghrib'] ?? false,
+            'isha': data['isha'] ?? false,
+            'isCompleted': isCompleted,
+          };
+        }
+
+        setState(() {
+          _prayerCache = updatedCache;
+        });
+      }
+    });
+  }
+
+// New helper widget for showing completed prayer tiles
+  Widget _buildCompletedPrayerTile(
+      DailyPrayer prayer, String name, bool value) {
+    return SizedBox(
+      width: MediaQuery.of(context).size.width / 2 - 16,
+      child: ListTile(
+        dense: true,
+        leading: value
+            ? Icon(Icons.check_circle, color: Colors.green)
+            : Icon(Icons.circle_outlined),
+        title: Text(
+          name,
+          style: TextStyle(
+            color: value ? Colors.green : Colors.black,
+            fontWeight: value ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+        onTap: () => _handlePrayerCompletion(prayer, name, !value),
+      ),
+    );
+  }
+
+  // Future<void> _handlePrayerCompletion(
+  //     DailyPrayer prayer, String prayerName, bool newValue) async {
+  //   if (_isUpdatingPrayer) return;
+
+  //   try {
+  //     setState(() {
+  //       _isUpdatingPrayer = true;
+  //     });
+
+  //     final userId = FirebaseAuth.instance.currentUser?.uid;
+  //     if (userId == null) {
+  //       throw Exception('User not logged in');
+  //     }
+
+  //     // Start a batch operation
+  //     final batch = FirebaseFirestore.instance.batch();
+
+  //     // 1. First get the current period document to get existing counts
+  //     final periodDoc = await FirebaseFirestore.instance
+  //         .collection('users')
+  //         .doc(userId)
+  //         .collection('bulkPeriods')
+  //         .doc(currentPeriodId)
+  //         .get();
+
+  //     // Get existing counts from the period document
+  //     final existingCompletedPrayers =
+  //         periodDoc.data()?['completedPrayers'] ?? 0;
+  //     final existingCompletedDays = periodDoc.data()?['completedDays'] ?? 0;
+
+  //     // 2. Get the prayer document
+  //     final prayerRef = FirebaseFirestore.instance
+  //         .collection('users')
+  //         .doc(userId)
+  //         .collection('prayers')
+  //         .doc(prayer.id);
+
+  //     final prayerDoc = await prayerRef.get();
+  //     final prayerData = prayerDoc.data() as Map<String, dynamic>;
+
+  //     // Check if this specific prayer was previously completed
+  //     final bool wasPreviouslyCompleted =
+  //         prayerData[prayerName.toLowerCase()] ?? false;
+
+  //     // Calculate the change in prayer count
+  //     final int prayerCountChange = newValue && !wasPreviouslyCompleted
+  //         ? 1
+  //         : !newValue && wasPreviouslyCompleted
+  //             ? -1
+  //             : 0;
+
+  //     // Update the prayer status
+  //     batch.update(prayerRef, {
+  //       prayerName.toLowerCase(): newValue,
+  //       'lastUpdated': FieldValue.serverTimestamp()
+  //     });
+
+  //     // Get updated prayer state
+  //     Map<String, bool> updatedPrayerState = {
+  //       'fajr': prayerData['fajr'] ?? false,
+  //       'zuhr': prayerData['zuhr'] ?? false,
+  //       'asr': prayerData['asr'] ?? false,
+  //       'maghrib': prayerData['maghrib'] ?? false,
+  //       'isha': prayerData['isha'] ?? false,
+  //     };
+  //     updatedPrayerState[prayerName.toLowerCase()] = newValue;
+
+  //     // Check completion status
+  //     final bool willBeFullyCompleted =
+  //         updatedPrayerState.values.every((v) => v);
+  //     final bool wasFullyCompleted = prayerData.values.every((v) => v == true);
+
+  //     // Calculate day completion change
+  //     final int dayCountChange = willBeFullyCompleted && !wasFullyCompleted
+  //         ? 1
+  //         : !willBeFullyCompleted && wasFullyCompleted
+  //             ? -1
+  //             : 0;
+
+  //     // Calculate new totals by ADDING to existing counts
+  //     final int newCompletedPrayers =
+  //         existingCompletedPrayers + prayerCountChange;
+  //     final int newCompletedDays = existingCompletedDays + dayCountChange;
+
+  //     // Update the period document with accumulated totals
+  //     batch.update(
+  //         FirebaseFirestore.instance
+  //             .collection('users')
+  //             .doc(userId)
+  //             .collection('bulkPeriods')
+  //             .doc(currentPeriodId),
+  //         {
+  //           'completedPrayers': newCompletedPrayers,
+  //           'completedDays': newCompletedDays,
+  //           'lastUpdated': FieldValue.serverTimestamp(),
+  //           'lastPrayerUpdate': {
+  //             'prayerId': prayer.id,
+  //             'prayerName': prayerName,
+  //             'timestamp': FieldValue.serverTimestamp()
+  //           }
+  //         });
+
+  //     // Commit all updates
+  //     await batch.commit();
+
+  //     // Update local state
+  //     if (mounted) {
+  //       setState(() {
+  //         _prayerCache[prayer.id] ??= {};
+  //         _prayerCache[prayer.id]![prayerName.toLowerCase()] = newValue;
+  //         _prayerCache[prayer.id]!['isCompleted'] = willBeFullyCompleted;
+  //         completedPrayersCount = newCompletedPrayers;
+  //         completedDays = newCompletedDays;
+  //       });
+  //     }
+  //   } catch (e) {
+  //     print('Error updating prayer status: $e');
+  //     // Revert local cache if update fails
+  //     if (mounted) {
+  //       setState(() {
+  //         _prayerCache[prayer.id]![prayerName.toLowerCase()] = !newValue;
+  //       });
+  //       ScaffoldMessenger.of(context).showSnackBar(
+  //         SnackBar(
+  //           content: Text('Failed to update prayer status'),
+  //           backgroundColor: Colors.red,
+  //         ),
+  //       );
+  //     }
+  //   } finally {
+  //     if (mounted) {
+  //       setState(() {
+  //         _isUpdatingPrayer = false;
+  //       });
+  //     }
+  //   }
+  // }
+
+  // void _subscribeToPrayerStatuses() {
+  //   if (currentPeriodId == null) return;
+  //   final userId = FirebaseAuth.instance.currentUser?.uid;
+
+  //   // Listen to period document changes
+  //   FirebaseFirestore.instance
+  //       .collection('users')
+  //       .doc(userId)
+  //       .collection('bulkPeriods')
+  //       .doc(currentPeriodId)
+  //       .snapshots()
+  //       .listen((snapshot) {
+  //     if (snapshot.exists && mounted) {
+  //       final data = snapshot.data()!;
+  //       setState(() {
+  //         completedDays = data['completedDays'] ?? 0;
+  //         completedPrayersCount = data['completedPrayers'] ?? 0;
+  //         totalPrayers = data['totalPrayers'] ?? 0;
+  //       });
+  //     }
+  //   });
+
+  //   // Listen to all prayers for this period
+  //   FirebaseFirestore.instance
+  //       .collection('users')
+  //       .doc(userId)
+  //       .collection('prayers')
+  //       .where('periodId', isEqualTo: currentPeriodId)
+  //       .snapshots()
+  //       .listen((snapshot) {
+  //     if (snapshot.docs.isNotEmpty && mounted) {
+  //       final updatedCache = Map<String, Map<String, bool>>.from(_prayerCache);
+
+  //       for (var doc in snapshot.docs) {
+  //         final data = doc.data();
+  //         final isCompleted = data['fajr'] == true &&
+  //             data['zuhr'] == true &&
+  //             data['asr'] == true &&
+  //             data['maghrib'] == true &&
+  //             data['isha'] == true;
+
+  //         updatedCache[doc.id] = {
+  //           'fajr': data['fajr'] ?? false,
+  //           'zuhr': data['zuhr'] ?? false,
+  //           'asr': data['asr'] ?? false,
+  //           'maghrib': data['maghrib'] ?? false,
+  //           'isha': data['isha'] ?? false,
+  //           'isCompleted': isCompleted,
+  //         };
+  //       }
+
+  //       setState(() {
+  //         _prayerCache = updatedCache;
+  //       });
+  //     }
+  //   });
+  // }
+
   Future<void> _updatePrayerStatus(
       String prayerId, String prayer, bool value) async {
+    if (_isUpdatingPrayer) return;
+
     try {
-      // Update local cache first for immediate UI response
       setState(() {
+        _isUpdatingPrayer = true;
+        // Update local cache immediately
         if (_prayerCache[prayerId] == null) {
           _prayerCache[prayerId] = {};
         }
         _prayerCache[prayerId]![prayer] = value;
       });
 
-      // Update the prayer document
+      // Update Firestore
+      final userId = FirebaseAuth.instance.currentUser?.uid;
       await FirebaseFirestore.instance
           .collection('users')
-          .doc(FirebaseAuth.instance.currentUser?.uid)
+          .doc(userId)
           .collection('prayers')
           .doc(prayerId)
           .update({prayer: value});
 
-      // After updating prayer, calculate total completed prayers for this period
+      // Check if all prayers for this day are completed after the update
+      final prayerDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('prayers')
+          .doc(prayerId)
+          .get();
+
+      final data = prayerDoc.data()!;
+      final bool isCompleted = data['fajr'] == true &&
+          data['zuhr'] == true &&
+          data['asr'] == true &&
+          data['maghrib'] == true &&
+          data['isha'] == true;
+
+      // Update the cache with completion status
+      setState(() {
+        _prayerCache[prayerId]!['isCompleted'] = isCompleted;
+      });
+
+      // Update progress counters only after confirmation
       await _updateProgressCounters();
     } catch (e) {
       print('Error updating prayer status: $e');
@@ -57,6 +697,10 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to update prayer status')),
       );
+    } finally {
+      setState(() {
+        _isUpdatingPrayer = false;
+      });
     }
   }
 
@@ -75,12 +719,14 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
           .where('periodId', isEqualTo: currentPeriodId)
           .get();
 
+      // Calculate totals
       int totalCompletedPrayers = 0;
-      int completedDaysCount = 0;
+      Set<String> completedDaysSet = {};
 
-      // Calculate completed prayers and days
       for (var doc in prayers.docs) {
         var data = doc.data();
+        String date =
+            (data['date'] as Timestamp).toDate().toString().split(' ')[0];
         int dayCompletedPrayers = 0;
 
         if (data['fajr'] == true) dayCompletedPrayers++;
@@ -90,10 +736,13 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
         if (data['isha'] == true) dayCompletedPrayers++;
 
         totalCompletedPrayers += dayCompletedPrayers;
-        if (dayCompletedPrayers == 5) completedDaysCount++;
+
+        if (dayCompletedPrayers == 5) {
+          completedDaysSet.add(date);
+        }
       }
 
-      // Update the period document with new counts
+      // Update period document
       await FirebaseFirestore.instance
           .collection('users')
           .doc(userId)
@@ -101,69 +750,113 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
           .doc(currentPeriodId)
           .update({
         'completedPrayers': totalCompletedPrayers,
-        'completedDays': completedDaysCount,
+        'completedDays': completedDaysSet.length,
+        'completedDaysSet': completedDaysSet.toList(),
       });
 
-      // Update local state
-      setState(() {
-        completedPrayersCount = totalCompletedPrayers;
-        completedDays = completedDaysCount;
-      });
+      // Update local state only after successful Firestore update
+      if (mounted) {
+        setState(() {
+          completedPrayersCount = totalCompletedPrayers;
+          completedDays = completedDaysSet.length;
+        });
+      }
     } catch (e) {
       print('Error updating progress counters: $e');
     }
   }
 
-// Modify _subscribeToPrayerStatuses to listen to both prayers and period updates
-  void _subscribeToPrayerStatuses() {
-    if (currentPeriodId == null) return;
-    final userId = FirebaseAuth.instance.currentUser?.uid;
-
-    // Listen to period document changes
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('bulkPeriods')
-        .doc(currentPeriodId)
-        .snapshots()
-        .listen((snapshot) {
-      if (snapshot.exists) {
-        final data = snapshot.data()!;
-        setState(() {
-          completedDays = data['completedDays'] ?? 0;
-          completedPrayersCount = data['completedPrayers'] ?? 0;
-          totalPrayers = data['totalPrayers'] ?? 0;
-        });
-      }
-    });
-
-    // Listen to prayer status changes
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('prayers')
-        .where('periodId', isEqualTo: currentPeriodId)
-        .snapshots()
-        .listen((snapshot) {
-      if (snapshot.docs.isNotEmpty) {
-        setState(() {
-          _prayerCache = Map.fromEntries(
-            snapshot.docs.map((doc) => MapEntry(
-                  doc.id,
-                  Map<String, bool>.from({
-                    'fajr': doc.data()['fajr'] ?? false,
-                    'zuhr': doc.data()['zuhr'] ?? false,
-                    'asr': doc.data()['asr'] ?? false,
-                    'maghrib': doc.data()['maghrib'] ?? false,
-                    'isha': doc.data()['isha'] ?? false,
-                  }),
-                )),
-          );
-        });
-      }
-    });
+  void _showCompletionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Congratulations! 🎉'),
+        content: Text(
+            'You have completed all prayers in this period! Would you like to start a new period?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Later'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                currentPeriodId = null;
+                showDatePickers = true;
+                startDate = null;
+                endDate = null;
+              });
+            },
+            child: Text('Start New Period'),
+          ),
+        ],
+      ),
+    );
   }
 
+// Add this helper function for day suffix
+  String _getDaySuffix(int day) {
+    if (day >= 11 && day <= 13) {
+      return 'th';
+    }
+    switch (day % 10) {
+      case 1:
+        return 'st';
+      case 2:
+        return 'nd';
+      case 3:
+        return 'rd';
+      default:
+        return 'th';
+    }
+  }
+
+  Future<void> _loadActivePeriod() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId == null) return;
+
+      final periodsSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('bulkPeriods')
+          .orderBy('createdAt', descending: true)
+          .limit(1)
+          .get();
+
+      if (periodsSnapshot.docs.isNotEmpty) {
+        final periodDoc = periodsSnapshot.docs.first;
+        final data = periodDoc.data();
+
+        setState(() {
+          currentPeriodId = periodDoc.id;
+          totalDays = data['totalDays'] ?? 0;
+          completedDays = data['completedDays'] ?? 0;
+          totalPrayers = data['totalPrayers'] ?? 0;
+          completedPrayersCount = data['completedPrayers'] ?? 0;
+          showDatePickers = false;
+
+          if (data['startDate'] != null) {
+            startDate = (data['startDate'] as Timestamp).toDate();
+          }
+          if (data['endDate'] != null) {
+            endDate = (data['endDate'] as Timestamp).toDate();
+          }
+        });
+
+        _subscribeToPrayerStatuses();
+      } else {
+        setState(() {
+          showDatePickers = true;
+        });
+      }
+    } catch (e) {
+      print('Error loading active period: $e');
+    }
+  }
+
+// First, let's improve the _up
 // Add initState to ensure we load data when screen opens
   @override
   void initState() {
@@ -277,31 +970,61 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('Qaza Prayer Tracker'),
-        actions: [
-          if (currentPeriodId != null)
-            Center(
-              child: Padding(
-                padding: EdgeInsets.only(right: 16),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      '$completedDays/$totalDays days',
-                      style:
-                          TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      '$completedPrayersCount/$totalPrayers prayers',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ],
-                ),
+      appBar: AppBar(title: Text('Qaza Prayer Tracker'), actions: [
+        // Add New Period button
+        IconButton(
+          icon: Icon(Icons.add),
+          tooltip: 'Create New Period',
+          onPressed: () {
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: Text('Create New Period?'),
+                content: Text(currentPeriodId != null
+                    ? 'This will end your current period. Continue?'
+                    : 'Start tracking a new prayer period?'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text('Cancel'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      setState(() {
+                        currentPeriodId = null;
+                        showDatePickers = true;
+                        startDate = null;
+                        endDate = null;
+                      });
+                    },
+                    child: Text('Create New'),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        if (currentPeriodId != null)
+          Center(
+            child: Padding(
+              padding: EdgeInsets.only(right: 16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '$completedDays/$totalDays days',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    '$completedPrayersCount/$totalPrayers prayers',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
               ),
             ),
-        ],
-      ),
+          ),
+      ]),
       body: isLoading
           ? Center(child: CircularProgressIndicator())
           : Column(
@@ -374,52 +1097,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
     );
   }
 
-  Future<void> _loadActivePeriod() async {
-    try {
-      final userId = FirebaseAuth.instance.currentUser?.uid;
-      if (userId == null) return;
-
-      final periodsSnapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(userId)
-          .collection(
-              'bulkPeriods') // Changed from 'bulkPeriods' to user's collection
-          .orderBy('createdAt', descending: true)
-          .limit(1)
-          .get();
-
-      if (periodsSnapshot.docs.isNotEmpty) {
-        final periodDoc = periodsSnapshot.docs.first;
-        final data = periodDoc.data();
-
-        setState(() {
-          currentPeriodId = periodDoc.id;
-          totalDays = data['totalDays'] ?? 0;
-          completedDays = data['completedDays'] ?? 0;
-          totalPrayers = data['totalPrayers'] ?? 0;
-          completedPrayersCount = data['completedPrayers'] ?? 0;
-          showDatePickers = false;
-
-          if (data['startDate'] != null) {
-            startDate = (data['startDate'] as Timestamp).toDate();
-          }
-          if (data['endDate'] != null) {
-            endDate = (data['endDate'] as Timestamp).toDate();
-          }
-        });
-
-        // Immediately subscribe to prayer statuses after loading period
-        _subscribeToPrayerStatuses();
-      } else {
-        setState(() {
-          showDatePickers = true;
-        });
-      }
-    } catch (e) {
-      print('Error loading active period: $e');
-    }
-  }
-
   Future<void> _moveToCompleted(DailyPrayer prayer) async {
     try {
       // Add to completed prayers
@@ -457,82 +1134,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
     }
   }
 
-  bool _canMarkPrayer(int index, String prayer) {
-    if (index == 0) return true;
-
-    DailyPrayers previousDay = periodPrayers[index - 1];
-    return previousDay.isCompleted();
-  }
-
-  void _togglePrayer(int index, String prayer) {
-    if (!_canMarkPrayer(index, prayer)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Please complete previous day prayers first'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      periodPrayers[index].togglePrayer(prayer);
-      _checkAndMoveCompleted();
-      _loadNextDayIfNeeded();
-    });
-  }
-
-  void _checkAndMoveCompleted() {
-    List<DailyPrayers> completedDays = [];
-    List<DailyPrayers> remainingDays = [];
-
-    for (var prayers in periodPrayers) {
-      if (prayers.isCompleted()) {
-        // Call the method here
-        completedDays.add(prayers);
-      } else {
-        remainingDays.add(prayers);
-      }
-    }
-
-    if (completedDays.isNotEmpty) {
-      // Convert DailyPrayers to CompletedPeriod
-      List<CompletedPeriod> completedPeriods = completedDays.map((prayer) {
-        return CompletedPeriod(
-          startDate: prayer.date,
-          endDate: prayer.date, // Assuming single-day completion
-          days: 1, // Assuming one day per `DailyPrayers` entry
-        );
-      }).toList();
-
-      // Add to Firestore
-      _bulkPrayerService.addCompletedPrayers(completedPeriods);
-
-      setState(() {
-        periodPrayers = remainingDays;
-      });
-    }
-  }
-
-  void _loadNextDayIfNeeded() {
-    if (periodPrayers.isEmpty && endDate != null) {
-      DateTime lastDate =
-          periodPrayers.isEmpty ? startDate! : periodPrayers.last.date;
-      DateTime nextDate = lastDate.add(Duration(days: 1));
-
-      if (!nextDate.isAfter(endDate!)) {
-        DateTime endLoadDate = nextDate.add(Duration(days: displayDays - 1));
-        for (DateTime date = nextDate;
-            date.isBefore(endLoadDate.add(Duration(days: 1))) &&
-                date.isBefore(endDate!.add(Duration(days: 1)));
-            date = date.add(Duration(days: 1))) {
-          periodPrayers.add(DailyPrayers(date: date));
-        }
-        setState(() {});
-      }
-    }
-  }
-
   Widget _buildDatePickers() {
     return Padding(
       padding: EdgeInsets.all(16),
@@ -565,54 +1166,6 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
               onTap: () => _selectDate(false),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPrayerCard(DailyPrayer prayer) {
-    bool isCompleted = prayer.fajr &&
-        prayer.zuhr &&
-        prayer.asr &&
-        prayer.maghrib &&
-        prayer.isha;
-
-    return Card(
-      margin: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: EdgeInsets.all(8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  DateFormat('d MMMM yyyy').format(prayer.date),
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                if (isCompleted)
-                  Text('All Prayers Completed!',
-                      style: TextStyle(
-                          color: Colors.green, fontWeight: FontWeight.bold))
-              ],
-            ),
-          ),
-          if (!isCompleted)
-            Wrap(
-              children: [
-                _buildPrayerCheckbox(
-                    prayer, 'Fajr', _getPrayerStatus(prayer.id!, 'fajr')),
-                _buildPrayerCheckbox(
-                    prayer, 'Zuhr', _getPrayerStatus(prayer.id!, 'zuhr')),
-                _buildPrayerCheckbox(
-                    prayer, 'Asr', _getPrayerStatus(prayer.id!, 'asr')),
-                _buildPrayerCheckbox(
-                    prayer, 'Maghrib', _getPrayerStatus(prayer.id!, 'maghrib')),
-                _buildPrayerCheckbox(
-                    prayer, 'Isha', _getPrayerStatus(prayer.id!, 'isha')),
-              ],
-            ),
         ],
       ),
     );
@@ -673,9 +1226,16 @@ class _QazaPeriodPageState extends State<QazaPeriodPage> {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content:
-                                    Text('$name prayer marked as completed'),
-                                backgroundColor: Colors.green,
-                                duration: Duration(seconds: 2),
+
+// Replace the dialog's Yes button onPressed with this optimized version
+                                    TextButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    _handlePrayerCompletion(
+                                        prayer, name, newValue);
+                                  },
+                                  child: Text('Yes'),
+                                ),
                               ),
                             );
                           },

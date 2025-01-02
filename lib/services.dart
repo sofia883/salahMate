@@ -996,7 +996,7 @@ class BulkPrayerService {
 
 class DailyPrayer {
   final DateTime date;
-  final String? id;
+  final String id;
 
   final String periodId;
 
